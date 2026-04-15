@@ -57,6 +57,40 @@ if [ "$#" -ge 4 ] && [ "$1" = "-a" ] && [ "$3" = "-vvs" ] && [ "$4" = "rules" ];
   exit 0
 fi
 
+if [ "$#" -ge 7 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ "$6" = "replace" ] && [ "$7" = "-f" ]; then
+  anchor=$2
+  table=$4
+  cp "$8" "$STATE_DIR/table-${anchor}-$table.txt"
+  exit 0
+fi
+
+if [ "$#" -ge 6 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ "$6" = "show" ]; then
+  anchor=$2
+  table=$4
+  file="$STATE_DIR/table-${anchor}-$table.txt"
+  [ -f "$file" ] && cat "$file"
+  exit 0
+fi
+
+if [ "$#" -ge 7 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ "$6" = "expire" ]; then
+  anchor=$2
+  table=$4
+  file="$STATE_DIR/table-${anchor}-$table.txt"
+  [ -f "$file" ] || : >"$STATE_DIR/table-${anchor}-$table.txt"
+  exit 0
+fi
+
+if [ "$#" -ge 6 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ "$6" = "flush" ]; then
+  anchor=$2
+  table=$4
+  : >"$STATE_DIR/table-${anchor}-$table.txt"
+  exit 0
+fi
+
+if [ "$#" -ge 6 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ "$6" = "kill" ]; then
+  exit 0
+fi
+
 if [ "$#" -ge 5 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "replace" ] && [ "$5" = "-f" ]; then
   table=$2
   cp "$6" "$STATE_DIR/table-$table.txt"

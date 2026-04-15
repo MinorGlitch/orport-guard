@@ -5,6 +5,7 @@ set -eu
 PROGRAM_NAME=${0##*/}
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PROGRAM_PATH=$SCRIPT_DIR/$PROGRAM_NAME
 
 . "$ROOT_DIR/lib/pf.sh"
 
@@ -17,10 +18,15 @@ Commands:
   check      Render the anchor and run PF syntax checks without loading it.
   apply      Render and load the PF anchor, then refresh trust tables.
   refresh    Refresh trust tables only.
+  expire     Expire block-table entries older than the configured threshold.
   render     Print the generated PF anchor to stdout.
   status     Show discovered targets and PF status for this tool.
   install-hook
              Ensure the root pf.conf contains anchor "tor-anchor".
+  install-cron
+             Install managed cron entries for expiry and trust refresh.
+  remove-cron
+             Remove managed cron entries for this tool.
   disable    Disable only the tool-managed PF anchor and tables.
 
 Options:
@@ -62,7 +68,7 @@ CLI_ENABLE_IPV6=
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    enable|check|apply|refresh|render|status|install-hook|disable)
+    enable|check|apply|refresh|expire|render|status|install-hook|install-cron|remove-cron|disable)
       COMMAND=$1
       shift
       break
@@ -190,6 +196,9 @@ case "$COMMAND" in
   refresh)
     tor_ddos_refresh
     ;;
+  expire)
+    tor_ddos_expire
+    ;;
   render)
     tor_ddos_render
     ;;
@@ -198,6 +207,12 @@ case "$COMMAND" in
     ;;
   install-hook)
     tor_ddos_install_hook
+    ;;
+  install-cron)
+    tor_ddos_install_cron
+    ;;
+  remove-cron)
+    tor_ddos_remove_cron
     ;;
   disable)
     tor_ddos_disable

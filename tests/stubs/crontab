@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -eu
+
+CRON_FILE=${CRONTAB_FILE:?}
+mkdir -p "$(dirname "$CRON_FILE")"
+
+if [ "$#" -eq 1 ] && [ "$1" = "-l" ]; then
+  [ -f "$CRON_FILE" ] && cat "$CRON_FILE"
+  exit 0
+fi
+
+if [ "$#" -eq 1 ] && [ -f "$1" ]; then
+  cp "$1" "$CRON_FILE"
+  exit 0
+fi
+
+exit 1

@@ -34,9 +34,12 @@ The main commands are:
 ./bin/tor-anchor check
 ./bin/tor-anchor apply
 ./bin/tor-anchor refresh
+./bin/tor-anchor expire
 ./bin/tor-anchor render
 ./bin/tor-anchor status
 ./bin/tor-anchor install-hook
+./bin/tor-anchor install-cron
+./bin/tor-anchor remove-cron
 ./bin/tor-anchor disable
 ```
 
@@ -92,6 +95,11 @@ For most operators, the flow should be:
 
 `check` renders the anchor and runs PF syntax checks without loading it.
 `enable` makes sure the root hook exists, reloads `pf.conf`, then applies the managed anchor.
+If you want exact expiry cleanup and periodic trust refresh, install the managed cron block afterwards:
+
+```sh
+./bin/tor-anchor install-cron
+```
 
 If you want the lower-level steps, those still exist.
 
@@ -163,9 +171,14 @@ That profile tightens the defaults to roughly match the sharper Linux-era recipe
 - `max-src-conn-rate 7/1`
 - `BLOCK_EXPIRE_SECONDS=300`
 
-Timed block entries are expired lazily on the next `enable`, `apply`, or `refresh` run once they are older than the configured age.
+Timed block entries can be cleaned in two ways:
+
+- manually with `./bin/tor-anchor expire`
+- automatically with `./bin/tor-anchor install-cron`
+
+Without cron, expiry is lazy on the next `enable`, `apply`, or `refresh` run once entries are older than the configured age.
 That means a `300` second ban is really "at least 300 seconds, then cleared on the next tor-anchor mutation run".
-The default profile also uses the same lazy `300` second expiry and differs mainly in the softer connection and rate thresholds.
+The default profile also uses the same `300` second expiry and differs mainly in the softer connection and rate thresholds.
 
 ## What this is not
 

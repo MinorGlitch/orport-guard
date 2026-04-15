@@ -15,6 +15,7 @@ tor_ddos_set_defaults() {
   TORRC_PATHS=${TORRC_PATHS:-"/usr/local/etc/tor/torrc /usr/local/etc/tor/torrc.d/*.conf /etc/tor/torrc /etc/tor/torrc.d/*.conf"}
   PFCTL_CMD=${PFCTL_CMD:-pfctl}
   SOCKSTAT_CMD=${SOCKSTAT_CMD:-sockstat}
+  CRONTAB_CMD=${CRONTAB_CMD:-crontab}
   DEFAULT_MAX_SRC_STATES=8
   DEFAULT_MAX_SRC_CONN=8
   DEFAULT_MAX_SRC_CONN_RATE_COUNT=9
@@ -113,6 +114,13 @@ tor_ddos_pfctl() {
   "$PFCTL_CMD" "$@"
 }
 
+tor_ddos_pfctl_anchor_table() {
+  anchor=$1
+  table=$2
+  shift 2
+  "$PFCTL_CMD" -a "$anchor" -t "$table" "$@"
+}
+
 tor_ddos_pf_mutation_allowed() {
   if [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ]; then
     return 0
@@ -129,6 +137,10 @@ tor_ddos_pf_mutation_allowed() {
 
 tor_ddos_require_pfctl() {
   command -v "$PFCTL_CMD" >/dev/null 2>&1 || tor_ddos_die "pfctl command not found: $PFCTL_CMD"
+}
+
+tor_ddos_require_crontab() {
+  command -v "$CRONTAB_CMD" >/dev/null 2>&1 || tor_ddos_die "crontab command not found: $CRONTAB_CMD"
 }
 
 tor_ddos_now_epoch() {
@@ -165,6 +177,21 @@ tor_ddos_format_age() {
   fi
 }
 
+tor_ddos_shell_quote() {
+  value=$1
+  case "$value" in
+    '')
+      printf "''"
+      ;;
+    *[!A-Za-z0-9_./:-]*)
+      printf "'%s'" "$(printf '%s' "$value" | sed "s/'/'\\\\''/g")"
+      ;;
+    *)
+      printf '%s' "$value"
+      ;;
+  esac
+}
+
 tor_ddos_trust_age_seconds() {
   mtime_v4=
   mtime_v6=
@@ -197,6 +224,77 @@ tor_ddos_trust_age_seconds() {
   else
     printf '%s\n' $((now - mtime))
   fi
+}
+
+tor_ddos_effective_config_path() {
+  if [ -n "${CONFIG_FILE:-}" ]; then
+    printf '%s\n' "$CONFIG_FILE"
+  else
+    printf '%s\n' "$CONFIG_FILE_DEFAULT"
+  fi
+}
+
+tor_ddos_cli_common_args() {
+  args=
+  effective_config=$(tor_ddos_effective_config_path)
+  if [ -n "$effective_config" ] && [ "$effective_config" != "$CONFIG_FILE_DEFAULT" ]; then
+    args="$args --config $(tor_ddos_shell_quote "$effective_config")"
+  fi
+  if [ "$STATE_DIR" != "/var/db/tor-anchor" ]; then
+    args="$args --state-dir $(tor_ddos_shell_quote "$STATE_DIR")"
+  fi
+  if [ "$PF_ANCHOR" != "tor-anchor" ]; then
+    args="$args --anchor $(tor_ddos_shell_quote "$PF_ANCHOR")"
+  fi
+  if [ "$PF_CONF" != "/etc/pf.conf" ]; then
+    args="$args --pf-conf $(tor_ddos_shell_quote "$PF_CONF")"
+  fi
+  if [ "$PROFILE" != "default" ]; then
+    args="$args --profile $(tor_ddos_shell_quote "$PROFILE")"
+  fi
+  if [ "$BLOCK_EXPIRE_SECONDS" != "$DEFAULT_BLOCK_EXPIRE_SECONDS" ]; then
+    args="$args --block-expire-seconds $(tor_ddos_shell_quote "$BLOCK_EXPIRE_SECONDS")"
+  fi
+  if tor_ddos_is_true "$ENABLE_IPV4" && ! tor_ddos_is_true "$ENABLE_IPV6"; then
+    args="$args --ipv4-only"
+  elif ! tor_ddos_is_true "$ENABLE_IPV4" && tor_ddos_is_true "$ENABLE_IPV6"; then
+    args="$args --ipv6-only"
+  fi
+  printf '%s\n' "$(tor_ddos_trim_words "$args")"
+}
+
+tor_ddos_cron_block() {
+  common_args=$(tor_ddos_cli_common_args)
+  program=$(tor_ddos_shell_quote "$PROGRAM_PATH")
+  if [ -n "$common_args" ]; then
+    expire_cmd="$program $common_args expire"
+    refresh_cmd="$program $common_args refresh"
+  else
+    expire_cmd="$program expire"
+    refresh_cmd="$program refresh"
+  fi
+
+  cat <<EOF
+# BEGIN tor-anchor
+* * * * * $expire_cmd >/dev/null 2>&1
+17 */6 * * * $refresh_cmd >/dev/null 2>&1
+# END tor-anchor
+EOF
+}
+
+tor_ddos_crontab_list() {
+  if "$CRONTAB_CMD" -l 2>/dev/null; then
+    return 0
+  fi
+  return 0
+}
+
+tor_ddos_crontab_strip_block() {
+  awk '
+    /^# BEGIN tor-anchor$/ { skip = 1; next }
+    /^# END tor-anchor$/ { skip = 0; next }
+    !skip { print }
+  '
 }
 
 tor_ddos_http_get() {
@@ -609,10 +707,10 @@ tor_ddos_install_hook() {
 
 tor_ddos_apply_tables() {
   if tor_ddos_is_true "$ENABLE_IPV4"; then
-    tor_ddos_pfctl -t "$TRUST_V4_TABLE" -T replace -f "$TRUST_V4_FILE" >/dev/null
+    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V4_TABLE" -T replace -f "$TRUST_V4_FILE" >/dev/null
   fi
   if tor_ddos_is_true "$ENABLE_IPV6"; then
-    tor_ddos_pfctl -t "$TRUST_V6_TABLE" -T replace -f "$TRUST_V6_FILE" >/dev/null
+    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V6_TABLE" -T replace -f "$TRUST_V6_FILE" >/dev/null
   fi
 }
 
@@ -646,10 +744,10 @@ tor_ddos_expire_block_tables_now() {
   [ "$BLOCK_EXPIRE_SECONDS" -gt 0 ] || return 0
 
   if tor_ddos_is_true "$ENABLE_IPV4"; then
-    tor_ddos_pfctl -t "$BLOCK_V4_TABLE" -T expire "$BLOCK_EXPIRE_SECONDS" >/dev/null 2>&1 || true
+    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V4_TABLE" -T expire "$BLOCK_EXPIRE_SECONDS" >/dev/null 2>&1 || true
   fi
   if tor_ddos_is_true "$ENABLE_IPV6"; then
-    tor_ddos_pfctl -t "$BLOCK_V6_TABLE" -T expire "$BLOCK_EXPIRE_SECONDS" >/dev/null 2>&1 || true
+    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V6_TABLE" -T expire "$BLOCK_EXPIRE_SECONDS" >/dev/null 2>&1 || true
   fi
 }
 
@@ -663,6 +761,17 @@ tor_ddos_check() {
   else
     tor_ddos_log "PF syntax OK for anchor $PF_ANCHOR"
     tor_ddos_log "PF config does not contain anchor \"$PF_ANCHOR\" in $PF_CONF yet"
+  fi
+}
+
+tor_ddos_expire() {
+  tor_ddos_pf_mutation_allowed
+  tor_ddos_require_pfctl
+  tor_ddos_expire_block_tables_now
+  if [ "$BLOCK_EXPIRE_SECONDS" -gt 0 ]; then
+    tor_ddos_log "expired block-table entries older than ${BLOCK_EXPIRE_SECONDS}s for $PF_ANCHOR"
+  else
+    tor_ddos_log "block-table expiry disabled for $PF_ANCHOR"
   fi
 }
 
@@ -712,6 +821,43 @@ tor_ddos_refresh() {
   tor_ddos_log "refreshed trust tables for $PF_ANCHOR"
 }
 
+tor_ddos_install_cron() {
+  tor_ddos_pf_mutation_allowed
+  tor_ddos_require_crontab
+
+  tmp_file=$(mktemp "${TMPDIR:-/tmp}/tor-anchor-cron.XXXXXX")
+  trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
+  existing=$(tor_ddos_crontab_list | tor_ddos_crontab_strip_block)
+
+  {
+    if [ -n "$existing" ]; then
+      printf '%s\n\n' "$existing"
+    fi
+    tor_ddos_cron_block
+  } >"$tmp_file"
+
+  "$CRONTAB_CMD" "$tmp_file"
+  trap - EXIT HUP INT TERM
+  rm -f "$tmp_file"
+
+  tor_ddos_log "installed managed cron entries for $PF_ANCHOR"
+}
+
+tor_ddos_remove_cron() {
+  tor_ddos_pf_mutation_allowed
+  tor_ddos_require_crontab
+
+  tmp_file=$(mktemp "${TMPDIR:-/tmp}/tor-anchor-cron.XXXXXX")
+  trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
+
+  tor_ddos_crontab_list | tor_ddos_crontab_strip_block >"$tmp_file"
+  "$CRONTAB_CMD" "$tmp_file"
+  trap - EXIT HUP INT TERM
+  rm -f "$tmp_file"
+
+  tor_ddos_log "removed managed cron entries for $PF_ANCHOR"
+}
+
 tor_ddos_render() {
   tor_ddos_prepare_anchor
   cat "$RENDER_FILE"
@@ -720,7 +866,7 @@ tor_ddos_render() {
 tor_ddos_status_table_count() {
   table_name=$1
   if command -v "$PFCTL_CMD" >/dev/null 2>&1; then
-    tor_ddos_pfctl -t "$table_name" -T show 2>/dev/null | awk 'NF { n++ } END { print n + 0 }'
+    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$table_name" -T show 2>/dev/null | awk 'NF { n++ } END { print n + 0 }'
   else
     printf '0\n'
   fi
@@ -814,11 +960,11 @@ tor_ddos_disable() {
   tor_ddos_require_pfctl
 
   tor_ddos_pfctl -a "$PF_ANCHOR" -f /dev/null >/dev/null 2>&1 || true
-  tor_ddos_pfctl -t "$TRUST_V4_TABLE" -T flush >/dev/null 2>&1 || true
-  tor_ddos_pfctl -t "$TRUST_V6_TABLE" -T flush >/dev/null 2>&1 || true
-  tor_ddos_pfctl -t "$BLOCK_V4_TABLE" -T kill >/dev/null 2>&1 || true
-  tor_ddos_pfctl -t "$BLOCK_V6_TABLE" -T kill >/dev/null 2>&1 || true
-  tor_ddos_pfctl -t "$BLOCK_V4_TABLE" -T flush >/dev/null 2>&1 || true
-  tor_ddos_pfctl -t "$BLOCK_V6_TABLE" -T flush >/dev/null 2>&1 || true
+  tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V4_TABLE" -T flush >/dev/null 2>&1 || true
+  tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V6_TABLE" -T flush >/dev/null 2>&1 || true
+  tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V4_TABLE" -T kill >/dev/null 2>&1 || true
+  tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V6_TABLE" -T kill >/dev/null 2>&1 || true
+  tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V4_TABLE" -T flush >/dev/null 2>&1 || true
+  tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V6_TABLE" -T flush >/dev/null 2>&1 || true
   tor_ddos_log "disabled PF anchor $PF_ANCHOR"
 }

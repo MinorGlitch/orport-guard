@@ -40,6 +40,7 @@ run_cli() {
   PFCTL_LOG=$TEST_ROOT/pfctl.log \
   PFCTL_STATE_DIR=$TEST_ROOT/pfstate \
   PFCTL_HAS_HOOK=${PFCTL_HAS_HOOK:-1} \
+  CRONTAB_FILE=$TEST_ROOT/crontab \
   SOCKSTAT_FIXTURE=${SOCKSTAT_FIXTURE:-} \
   TOR_DDOS_BSD_ALLOW_UNSUPPORTED=1 \
   PFCTL_CMD=pfctl \
@@ -150,6 +151,25 @@ EOF
   pass "install-hook adds or repositions the PF root hook once"
 }
 
+test_install_and_remove_cron() {
+  rm -f "$TEST_ROOT/crontab"
+  run_cli --state-dir "$TEST_ROOT/state-cron" --profile aggressive install-cron >/dev/null
+  assert_contains "$TEST_ROOT/crontab" '# BEGIN tor-anchor' "install-cron should add the managed block marker"
+  assert_contains "$TEST_ROOT/crontab" '* * * * * ' "install-cron should schedule expiry every minute"
+  assert_contains "$TEST_ROOT/crontab" ' expire >/dev/null 2>&1' "install-cron should schedule the expire command"
+  assert_contains "$TEST_ROOT/crontab" '17 */6 * * * ' "install-cron should schedule refresh every 6 hours"
+  assert_contains "$TEST_ROOT/crontab" ' refresh >/dev/null 2>&1' "install-cron should schedule the refresh command"
+
+  before=$(grep -c '^# BEGIN tor-anchor$' "$TEST_ROOT/crontab")
+  run_cli --state-dir "$TEST_ROOT/state-cron" --profile aggressive install-cron >/dev/null
+  after=$(grep -c '^# BEGIN tor-anchor$' "$TEST_ROOT/crontab")
+  [ "$before" -eq 1 ] && [ "$after" -eq 1 ] || fail "install-cron should be idempotent"
+
+  run_cli remove-cron >/dev/null
+  assert_not_contains "$TEST_ROOT/crontab" '# BEGIN tor-anchor' "remove-cron should remove the managed block marker"
+  pass "install-cron and remove-cron manage the crontab block"
+}
+
 test_enable_installs_reload_and_apply() {
   pf_conf=$TEST_ROOT/pf-enable.conf
   printf 'set skip on lo0\n' >"$pf_conf"
@@ -170,9 +190,9 @@ test_apply_status_refresh_disable() {
 
   run_cli --state-dir "$TEST_ROOT/state5" --torrc "$FIXTURE_DIR/torrc-ipv4.conf" --profile aggressive apply >/dev/null
   assert_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -f $TEST_ROOT/state5/tor_anchor-anchor.conf" "apply should load anchor"
-  assert_contains "$TEST_ROOT/pfctl.log" "-t tor_anchor_trust_v4 -T replace -f $TEST_ROOT/state5/trust-v4.txt" "apply should refresh IPv4 trust table"
-  assert_contains "$TEST_ROOT/pfctl.log" "-t tor_anchor_block_v4 -T expire 300" "apply should lazily expire IPv4 block-table entries when configured"
-  assert_contains "$TEST_ROOT/pfctl.log" "-t tor_anchor_block_v6 -T expire 300" "apply should lazily expire IPv6 block-table entries when configured"
+  assert_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -t tor_anchor_trust_v4 -T replace -f $TEST_ROOT/state5/trust-v4.txt" "apply should refresh IPv4 trust table in the anchor context"
+  assert_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -t tor_anchor_block_v4 -T expire 300" "apply should lazily expire IPv4 block-table entries when configured"
+  assert_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -t tor_anchor_block_v6 -T expire 300" "apply should lazily expire IPv6 block-table entries when configured"
 
   status_out=$TEST_ROOT/status.out
   run_cli --state-dir "$TEST_ROOT/state5" --profile aggressive status >"$status_out"
@@ -182,8 +202,8 @@ test_apply_status_refresh_disable() {
 
   : >"$TEST_ROOT/pfctl.log"
   run_cli --state-dir "$TEST_ROOT/state5" --profile aggressive refresh >/dev/null
-  assert_contains "$TEST_ROOT/pfctl.log" "-t tor_anchor_trust_v4 -T replace -f $TEST_ROOT/state5/trust-v4.txt" "refresh should replace trust table"
-  assert_contains "$TEST_ROOT/pfctl.log" "-t tor_anchor_block_v4 -T expire 300" "refresh should lazily expire IPv4 block-table entries when configured"
+  assert_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -t tor_anchor_trust_v4 -T replace -f $TEST_ROOT/state5/trust-v4.txt" "refresh should replace trust table in the anchor context"
+  assert_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -t tor_anchor_block_v4 -T expire 300" "refresh should lazily expire IPv4 block-table entries when configured"
   assert_not_contains "$TEST_ROOT/pfctl.log" "-a tor-anchor -f $TEST_ROOT/state5/tor_anchor-anchor.conf" "refresh should not reload anchor"
 
   : >"$TEST_ROOT/pfctl.log"
@@ -202,7 +222,8 @@ test_check_validates_rendered_anchor
 test_status_reports_trust_age
 test_status_reports_unknown_trust_age
 test_install_hook_is_idempotent
+test_install_and_remove_cron
 test_enable_installs_reload_and_apply
 test_apply_status_refresh_disable
 
-printf '1..12\n'
+printf '1..13\n'
