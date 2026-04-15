@@ -30,6 +30,8 @@ The general rule set is:
 The main commands are:
 
 ```sh
+./bin/tor-anchor enable
+./bin/tor-anchor check
 ./bin/tor-anchor apply
 ./bin/tor-anchor refresh
 ./bin/tor-anchor render
@@ -61,6 +63,7 @@ You can add that line with the CLI:
 ```
 
 That edits `/etc/pf.conf` by default. If you keep your PF config somewhere else, use `--pf-conf /path/to/pf.conf`.
+The hook is placed before the first PF filter rule so it actually sees relay traffic.
 
 After adding the hook, reload PF:
 
@@ -79,22 +82,26 @@ If you do not want to touch live PF yet, use `render` first, inspect the file, a
 
 ## Quick start
 
-I would test it like this on a live relay:
+For most operators, the flow should be:
 
 ```sh
-./bin/tor-anchor install-hook
-pfctl -nf /etc/pf.conf
-pfctl -f /etc/pf.conf
-./bin/tor-anchor render
-pfctl -n -a tor-anchor -f /var/db/tor-anchor/tor_anchor-anchor.conf
+./bin/tor-anchor check
+./bin/tor-anchor enable
 ./bin/tor-anchor status
 ```
+
+`check` renders the anchor and runs PF syntax checks without loading it.
+`enable` makes sure the root hook exists, reloads `pf.conf`, then applies the managed anchor.
+
+If you want the lower-level steps, those still exist.
 
 If discovery is not what you want yet, force the exact target:
 
 ```sh
 ./bin/tor-anchor --target 198.51.100.10:9001 render
 ```
+
+If `TARGETS` or `--target` is set, explicit targets take precedence and autodiscovery is skipped.
 
 When you are happy with what it found and rendered:
 
@@ -120,6 +127,8 @@ It is just a shell config file. No YAML, no JSON, no extra parser.
 
 The main settings are:
 
+- `PROFILE`
+  `default` or `aggressive`
 - `TARGETS`
   explicit OR targets such as `198.51.100.10:9001 [2001:db8::10]:9001`
 - `TORRC_PATHS`
@@ -132,8 +141,31 @@ The main settings are:
 - `MAX_SRC_CONN`
 - `MAX_SRC_CONN_RATE_COUNT`
 - `MAX_SRC_CONN_RATE_WINDOW`
+- `BLOCK_EXPIRE_SECONDS`
+  lazily expire overload-blocked sources once they are older than this many seconds
 
 CLI flags override the config. The config overrides discovery.
+
+## Aggressive mode
+
+The default profile is intentionally conservative.
+
+If your relay is under active ORPort abuse, use:
+
+```sh
+./bin/tor-anchor --profile aggressive apply
+```
+
+That profile tightens the defaults to roughly match the sharper Linux-era recipes:
+
+- `max-src-states 4`
+- `max-src-conn 4`
+- `max-src-conn-rate 7/1`
+- `BLOCK_EXPIRE_SECONDS=300`
+
+Timed block entries are expired lazily on the next `enable`, `apply`, or `refresh` run once they are older than the configured age.
+That means a `300` second ban is really "at least 300 seconds, then cleared on the next tor-anchor mutation run".
+The default profile also uses the same lazy `300` second expiry and differs mainly in the softer connection and rate thresholds.
 
 ## What this is not
 

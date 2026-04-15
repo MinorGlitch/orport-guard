@@ -8,10 +8,32 @@ mkdir -p "$STATE_DIR"
 
 printf '%s\n' "$*" >>"$LOG_FILE"
 
+LIVE_HOOK_FILE=$STATE_DIR/live-hook
+
 if [ "$#" -eq 1 ] && [ "$1" = "-sr" ]; then
-  if [ "${PFCTL_HAS_HOOK:-0}" = "1" ]; then
+  if [ "${PFCTL_HAS_HOOK:-0}" = "1" ] || [ -f "$LIVE_HOOK_FILE" ]; then
     printf 'anchor "tor-anchor"\n'
   fi
+  exit 0
+fi
+
+if [ "$#" -eq 2 ] && [ "$1" = "-nf" ]; then
+  [ -f "$2" ] || exit 1
+  exit 0
+fi
+
+if [ "$#" -eq 2 ] && [ "$1" = "-f" ]; then
+  [ -f "$2" ] || exit 1
+  if grep -F 'anchor "tor-anchor"' "$2" >/dev/null 2>&1; then
+    : >"$LIVE_HOOK_FILE"
+  else
+    rm -f "$LIVE_HOOK_FILE"
+  fi
+  exit 0
+fi
+
+if [ "$#" -ge 5 ] && [ "$1" = "-n" ] && [ "$2" = "-a" ] && [ "$4" = "-f" ]; then
+  [ -f "$5" ] || exit 1
   exit 0
 fi
 
@@ -45,6 +67,13 @@ if [ "$#" -ge 4 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "show" ]; th
   table=$2
   file="$STATE_DIR/table-$table.txt"
   [ -f "$file" ] && cat "$file"
+  exit 0
+fi
+
+if [ "$#" -ge 5 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "expire" ]; then
+  table=$2
+  file="$STATE_DIR/table-$table.txt"
+  [ -f "$file" ] || : >"$STATE_DIR/table-$table.txt"
   exit 0
 fi
 

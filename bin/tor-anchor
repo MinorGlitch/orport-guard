@@ -13,6 +13,8 @@ usage() {
 Usage: $PROGRAM_NAME [options] <command>
 
 Commands:
+  enable     Install the PF hook if needed, reload pf.conf, then apply the anchor.
+  check      Render the anchor and run PF syntax checks without loading it.
   apply      Render and load the PF anchor, then refresh trust tables.
   refresh    Refresh trust tables only.
   render     Print the generated PF anchor to stdout.
@@ -26,6 +28,9 @@ Options:
       --state-dir PATH        Override the state directory.
       --anchor NAME           Override the PF anchor name.
       --pf-conf PATH          Override the root PF config path.
+      --profile NAME          Select a threshold profile (default or aggressive).
+      --block-expire-seconds N
+                              Expire block-table entries older than N seconds.
       --render-file PATH      Override the rendered anchor path.
       --torrc PATH            Add a torrc path for discovery.
       --target VALUE          Add an explicit target (IPv4:port or [IPv6]:port).
@@ -45,6 +50,8 @@ COMMAND=
 CLI_STATE_DIR=
 CLI_ANCHOR=
 CLI_PF_CONF=
+CLI_PROFILE=
+CLI_BLOCK_EXPIRE_SECONDS=
 CLI_RENDER_FILE=
 CLI_TORRC_PATHS=
 CLI_TARGETS=
@@ -55,7 +62,7 @@ CLI_ENABLE_IPV6=
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    apply|refresh|render|status|install-hook|disable)
+    enable|check|apply|refresh|render|status|install-hook|disable)
       COMMAND=$1
       shift
       break
@@ -78,6 +85,16 @@ while [ $# -gt 0 ]; do
     --pf-conf)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_PF_CONF=$2
+      shift 2
+      ;;
+    --profile)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_PROFILE=$2
+      shift 2
+      ;;
+    --block-expire-seconds)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_BLOCK_EXPIRE_SECONDS=$2
       shift 2
       ;;
     --render-file)
@@ -141,6 +158,8 @@ fi
 [ -z "$CLI_STATE_DIR" ] || STATE_DIR=$CLI_STATE_DIR
 [ -z "$CLI_ANCHOR" ] || PF_ANCHOR=$CLI_ANCHOR
 [ -z "$CLI_PF_CONF" ] || PF_CONF=$CLI_PF_CONF
+[ -z "$CLI_PROFILE" ] || PROFILE=$CLI_PROFILE
+[ -z "$CLI_BLOCK_EXPIRE_SECONDS" ] || BLOCK_EXPIRE_SECONDS=$CLI_BLOCK_EXPIRE_SECONDS
 [ -z "$CLI_RENDER_FILE" ] || RENDER_FILE=$CLI_RENDER_FILE
 [ -z "$CLI_TORRC_PATHS" ] || TORRC_PATHS="$TORRC_PATHS $CLI_TORRC_PATHS"
 [ -z "$CLI_TARGETS" ] || TARGETS="$TARGETS $CLI_TARGETS"
@@ -148,6 +167,8 @@ fi
 [ -z "$CLI_SERVICES" ] || EXEMPT_SERVICES="$EXEMPT_SERVICES $CLI_SERVICES"
 [ -z "$CLI_ENABLE_IPV4" ] || ENABLE_IPV4=$CLI_ENABLE_IPV4
 [ -z "$CLI_ENABLE_IPV6" ] || ENABLE_IPV6=$CLI_ENABLE_IPV6
+
+tor_ddos_apply_profile
 
 TORRC_PATHS=$(tor_ddos_trim_words "$TORRC_PATHS")
 TARGETS=$(tor_ddos_trim_words "$TARGETS")
@@ -157,6 +178,12 @@ EXEMPT_SERVICES=$(tor_ddos_trim_words "$EXEMPT_SERVICES")
 tor_ddos_finalize_paths
 
 case "$COMMAND" in
+  enable)
+    tor_ddos_enable
+    ;;
+  check)
+    tor_ddos_check
+    ;;
   apply)
     tor_ddos_apply
     ;;
