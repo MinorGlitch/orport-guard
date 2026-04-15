@@ -103,7 +103,7 @@ If you need to confirm what PF is actually seeing on FreeBSD, use `tcpdump` on t
 
 ```sh
 ifconfig -l
-doas tcpdump -ni ext0 'port 9001'
+doas tcpdump -ni <interface> 'port <orport>'
 ```
 
 For the full CLI surface, use:
