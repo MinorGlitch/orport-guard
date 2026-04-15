@@ -1,8 +1,29 @@
 # tor-anchor
 
-`tor-anchor` is a FreeBSD-first PF operator CLI for protecting Tor relay ORPorts with a dedicated PF anchor.
+`tor-anchor` is a small PF-based helper for FreeBSD Tor relay operators.
 
-## Commands
+It builds and manages a dedicated PF anchor for relay ORPorts. The goal is simple: keep the relay-specific filtering logic isolated from the rest of the host firewall, and make it easy to inspect, refresh, load, and remove without rewriting the main `pf.conf`.
+
+This project is intentionally narrow:
+
+- FreeBSD first
+- PF only
+- shell, not a daemon
+- focused on Tor relay ORPorts, not general firewall management
+
+## What it does
+
+`tor-anchor`:
+
+- discovers relay listeners from Tor config
+- falls back to `sockstat` when `ORPort` is set without an explicit address
+- fetches Tor authority and Snowflake trust lists
+- renders a dedicated PF anchor
+- loads that anchor without touching the rest of your ruleset
+- refreshes trust tables separately from full anchor reloads
+- shows the current managed state with a read-only `status` command
+
+The managed commands are:
 
 ```sh
 ./bin/tor-anchor apply
@@ -12,38 +33,95 @@
 ./bin/tor-anchor disable
 ```
 
-## PF integration
+Run `./bin/tor-anchor --help` for flags.
 
-The tool does not rewrite your main `pf.conf`. Your root ruleset must contain a hook for the managed anchor:
+## How it fits into PF
+
+This tool does not own your firewall. It only owns one anchor and the tables used by that anchor.
+
+Your main `pf.conf` must include:
 
 ```pf
 anchor "tor-anchor"
 ```
 
-Once that hook exists, `apply` renders the anchor into the state directory and loads it with:
+After that, `apply` will render the managed rules and load them into that anchor. By default the rendered file lives under:
 
-```sh
-pfctl -a tor-anchor -f /var/db/tor-anchor/tor_anchor-anchor.conf
+```text
+/var/db/tor-anchor/tor_anchor-anchor.conf
 ```
+
+If you do not want to touch live PF yet, use `render` first and inspect the output before loading anything.
 
 ## Configuration
 
-The sample config lives at `./etc/tor-anchor.conf`. It is a shell-style config with space-separated lists for:
+The sample config is `./etc/tor-anchor.conf`.
 
-- `TARGETS` such as `198.51.100.10:9001 [2001:db8::10]:9001`
-- `EXTRA_TRUST` for explicit trust entries
-- `EXEMPT_SERVICES` for explicitly passed local services
+It is a plain shell config. No YAML, no JSON.
 
-CLI flags override the config file. Config values override discovery.
+The main knobs are:
 
-## Discovery
+- `TARGETS`
+  Explicit OR targets such as `198.51.100.10:9001 [2001:db8::10]:9001`
+- `TORRC_PATHS`
+  Paths used for auto-discovery
+- `EXTRA_TRUST`
+  Extra trusted IPs or networks
+- `EXEMPT_SERVICES`
+  Extra local services to pass quickly in the managed anchor
+- `MAX_SRC_STATES`
+- `MAX_SRC_CONN`
+- `MAX_SRC_CONN_RATE_COUNT`
+- `MAX_SRC_CONN_RATE_WINDOW`
 
-The tool discovers targets from Tor config first and uses `sockstat` as a fallback when `ORPort` is configured without an explicit address. When discovery still cannot identify any target, `apply` fails safely unless explicit `TARGETS` or `--target` values were provided.
+CLI flags override the config file. The config file overrides discovery.
+
+## A cautious first run
+
+On a production relay, do not start with `apply`.
+
+Start with:
+
+```sh
+./bin/tor-anchor render
+```
+
+Then syntax-check the rendered anchor with `pfctl -n`, confirm the discovered targets are correct, and only then load it.
+
+If you want to avoid discovery entirely on the first run, pass explicit targets:
+
+```sh
+./bin/tor-anchor --target 198.51.100.10:9001 render
+```
+
+Once the anchor is live, you can inspect it with:
+
+```sh
+./bin/tor-anchor status
+```
+
+And remove only the managed anchor state with:
+
+```sh
+./bin/tor-anchor disable
+```
 
 ## Testing
 
-Run the shell test harness with:
+There is a small shell test harness under `./tests`.
+
+Run it with:
 
 ```sh
 ./tests/run.sh
 ```
+
+The tests use stubs for `pfctl`, `curl`, and `sockstat`, so they verify the project logic and workflow without touching a real firewall.
+
+## Notes
+
+- This is not a Linux iptables port.
+- This is not a general-purpose PF framework.
+- OpenBSD support may come later, but the current target is FreeBSD.
+
+If you are evaluating it on a live relay, treat `render` and `pfctl -n` as the normal starting point, not as optional extra caution.
