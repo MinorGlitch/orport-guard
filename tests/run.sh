@@ -88,6 +88,19 @@ test_apply_requires_targets() {
   pass "apply fails safely without targets"
 }
 
+test_install_hook_is_idempotent() {
+  pf_conf=$TEST_ROOT/pf.conf
+  printf 'set skip on lo0\n' >"$pf_conf"
+
+  run_cli --pf-conf "$pf_conf" install-hook >/dev/null
+  assert_contains "$pf_conf" 'anchor "tor-anchor"' "install-hook should add the managed anchor hook"
+
+  run_cli --pf-conf "$pf_conf" install-hook >/dev/null
+  hook_count=$(grep -c '^anchor "tor-anchor"$' "$pf_conf")
+  [ "$hook_count" -eq 1 ] || fail "install-hook should not duplicate the anchor hook"
+  pass "install-hook adds the PF root hook once"
+}
+
 test_apply_status_refresh_disable() {
   mkdir -p "$TEST_ROOT/pfstate"
   : >"$TEST_ROOT/pfctl.log"
@@ -116,6 +129,7 @@ test_render_ipv4
 test_render_dualstack_and_idempotent
 test_sockstat_fallback_and_override
 test_apply_requires_targets
+test_install_hook_is_idempotent
 test_apply_status_refresh_disable
 
-printf '1..5\n'
+printf '1..6\n'

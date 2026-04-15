@@ -17,12 +17,15 @@ Commands:
   refresh    Refresh trust tables only.
   render     Print the generated PF anchor to stdout.
   status     Show discovered targets and PF status for this tool.
+  install-hook
+             Ensure the root pf.conf contains anchor "tor-anchor".
   disable    Disable only the tool-managed PF anchor and tables.
 
 Options:
   -c, --config PATH           Use an alternate config file.
       --state-dir PATH        Override the state directory.
       --anchor NAME           Override the PF anchor name.
+      --pf-conf PATH          Override the root PF config path.
       --render-file PATH      Override the rendered anchor path.
       --torrc PATH            Add a torrc path for discovery.
       --target VALUE          Add an explicit target (IPv4:port or [IPv6]:port).
@@ -41,6 +44,7 @@ CONFIG_FILE=
 COMMAND=
 CLI_STATE_DIR=
 CLI_ANCHOR=
+CLI_PF_CONF=
 CLI_RENDER_FILE=
 CLI_TORRC_PATHS=
 CLI_TARGETS=
@@ -51,7 +55,7 @@ CLI_ENABLE_IPV6=
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    apply|refresh|render|status|disable)
+    apply|refresh|render|status|install-hook|disable)
       COMMAND=$1
       shift
       break
@@ -69,6 +73,11 @@ while [ $# -gt 0 ]; do
     --anchor)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_ANCHOR=$2
+      shift 2
+      ;;
+    --pf-conf)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_PF_CONF=$2
       shift 2
       ;;
     --render-file)
@@ -131,6 +140,7 @@ fi
 
 [ -z "$CLI_STATE_DIR" ] || STATE_DIR=$CLI_STATE_DIR
 [ -z "$CLI_ANCHOR" ] || PF_ANCHOR=$CLI_ANCHOR
+[ -z "$CLI_PF_CONF" ] || PF_CONF=$CLI_PF_CONF
 [ -z "$CLI_RENDER_FILE" ] || RENDER_FILE=$CLI_RENDER_FILE
 [ -z "$CLI_TORRC_PATHS" ] || TORRC_PATHS="$TORRC_PATHS $CLI_TORRC_PATHS"
 [ -z "$CLI_TARGETS" ] || TARGETS="$TARGETS $CLI_TARGETS"
@@ -158,6 +168,9 @@ case "$COMMAND" in
     ;;
   status)
     tor_ddos_status
+    ;;
+  install-hook)
+    tor_ddos_install_hook
     ;;
   disable)
     tor_ddos_disable

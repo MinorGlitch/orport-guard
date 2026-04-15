@@ -34,6 +34,7 @@ The main commands are:
 ./bin/tor-anchor refresh
 ./bin/tor-anchor render
 ./bin/tor-anchor status
+./bin/tor-anchor install-hook
 ./bin/tor-anchor disable
 ```
 
@@ -53,7 +54,22 @@ Your main `pf.conf` must contain:
 anchor "tor-anchor"
 ```
 
-That is the only required hook. After that, `apply` will render and load the managed anchor. By default the rendered file ends up here:
+You can add that line with the CLI:
+
+```sh
+./bin/tor-anchor install-hook
+```
+
+That edits `/etc/pf.conf` by default. If you keep your PF config somewhere else, use `--pf-conf /path/to/pf.conf`.
+
+After adding the hook, reload PF:
+
+```sh
+pfctl -nf /etc/pf.conf
+pfctl -f /etc/pf.conf
+```
+
+That is the only required root hook. After that, `apply` will render and load the managed anchor. By default the rendered file ends up here:
 
 ```text
 /var/db/tor-anchor/tor_anchor-anchor.conf
@@ -66,6 +82,9 @@ If you do not want to touch live PF yet, use `render` first, inspect the file, a
 I would test it like this on a live relay:
 
 ```sh
+./bin/tor-anchor install-hook
+pfctl -nf /etc/pf.conf
+pfctl -f /etc/pf.conf
 ./bin/tor-anchor render
 pfctl -n -a tor-anchor -f /var/db/tor-anchor/tor_anchor-anchor.conf
 ./bin/tor-anchor status

@@ -5,6 +5,7 @@ tor_ddos_set_defaults() {
   CONFIG_FILE_DEFAULT=${CONFIG_FILE_DEFAULT:-"$ROOT_DIR/etc/tor-anchor.conf"}
   STATE_DIR=${STATE_DIR:-/var/db/tor-anchor}
   PF_ANCHOR=${PF_ANCHOR:-tor-anchor}
+  PF_CONF=${PF_CONF:-/etc/pf.conf}
   ENABLE_IPV4=${ENABLE_IPV4:-1}
   ENABLE_IPV6=${ENABLE_IPV6:-1}
   TARGETS=${TARGETS:-}
@@ -406,6 +407,37 @@ tor_ddos_root_hook_present() {
   tor_ddos_pfctl -sr 2>/dev/null | grep -F "anchor \"$PF_ANCHOR\"" >/dev/null 2>&1
 }
 
+tor_ddos_pf_conf_has_hook() {
+  [ -f "$PF_CONF" ] || return 1
+  grep -E '^[[:space:]]*anchor[[:space:]]+"'"$PF_ANCHOR"'"([[:space:]]*#.*)?[[:space:]]*$' "$PF_CONF" >/dev/null 2>&1
+}
+
+tor_ddos_install_hook() {
+  tor_ddos_pf_mutation_allowed
+
+  [ -f "$PF_CONF" ] || tor_ddos_die "PF config file not found: $PF_CONF"
+
+  if tor_ddos_pf_conf_has_hook; then
+    tor_ddos_log "PF config already contains anchor \"$PF_ANCHOR\" in $PF_CONF"
+    return 0
+  fi
+
+  tmp_file=$PF_CONF.tor-anchor.$$
+  trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
+  cp "$PF_CONF" "$tmp_file"
+
+  if [ -s "$tmp_file" ] && [ -n "$(tail -c 1 "$tmp_file" 2>/dev/null || true)" ]; then
+    printf '\n' >>"$tmp_file"
+  fi
+
+  printf 'anchor "%s"\n' "$PF_ANCHOR" >>"$tmp_file"
+  mv "$tmp_file" "$PF_CONF"
+  trap - EXIT HUP INT TERM
+
+  tor_ddos_log "added anchor \"$PF_ANCHOR\" to $PF_CONF"
+  tor_ddos_log "reload PF with: pfctl -nf $PF_CONF && pfctl -f $PF_CONF"
+}
+
 tor_ddos_apply_tables() {
   if tor_ddos_is_true "$ENABLE_IPV4"; then
     tor_ddos_pfctl -t "$TRUST_V4_TABLE" -T replace -f "$TRUST_V4_FILE" >/dev/null
@@ -431,7 +463,10 @@ tor_ddos_apply() {
   tor_ddos_render_anchor_file "$targets_tmp" "$RENDER_FILE"
 
   if ! tor_ddos_root_hook_present; then
-    tor_ddos_die "PF root rules do not contain anchor \"$PF_ANCHOR\"; add that hook to pf.conf before apply"
+    if tor_ddos_pf_conf_has_hook; then
+      tor_ddos_die "PF root rules do not contain anchor \"$PF_ANCHOR\" yet; reload $PF_CONF with pfctl -nf $PF_CONF && pfctl -f $PF_CONF"
+    fi
+    tor_ddos_die "PF root rules do not contain anchor \"$PF_ANCHOR\"; run $0 install-hook or add that hook to $PF_CONF before apply"
   fi
 
   tor_ddos_pfctl -a "$PF_ANCHOR" -f "$RENDER_FILE" >/dev/null
@@ -489,6 +524,13 @@ tor_ddos_status() {
   printf 'Anchor: %s\n' "$PF_ANCHOR"
   printf 'State dir: %s\n' "$STATE_DIR"
   printf 'Rendered anchor: %s\n' "$RENDER_FILE"
+  printf 'PF config: %s\n' "$PF_CONF"
+  printf 'PF config hook: '
+  if tor_ddos_pf_conf_has_hook; then
+    printf 'yes\n'
+  else
+    printf 'no\n'
+  fi
   printf 'Root hook present: '
   if command -v "$PFCTL_CMD" >/dev/null 2>&1 && tor_ddos_root_hook_present; then
     printf 'yes\n'
