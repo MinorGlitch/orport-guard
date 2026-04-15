@@ -75,6 +75,9 @@ tor_ddos_validate_command_options() {
     remove-cron)
       tor_ddos_allow_command_options "$1"
       ;;
+    update)
+      tor_ddos_allow_command_options "$1"
+      ;;
     disable)
       tor_ddos_allow_command_options "$1" \
         config state-dir anchor

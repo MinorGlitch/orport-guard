@@ -1,16 +1,43 @@
 #!/bin/sh
 
+output_file=
 url=
+prev=
 for arg in "$@"; do
-  url=$arg
+  if [ "$prev" = "-o" ]; then
+    output_file=$arg
+    prev=
+    continue
+  fi
+  case "$arg" in
+    -o)
+      prev=-o
+      continue
+      ;;
+    *)
+      url=$arg
+      ;;
+  esac
 done
+
+emit() {
+  if [ -n "$output_file" ]; then
+    cat >"$output_file"
+  else
+    cat
+  fi
+}
 
 case "$url" in
   *"${CURL_FAIL_URL_SUBSTRING:-__never_match__}"*)
     exit 1
     ;;
+  *orport-guard/releases/*/orport-guard)
+    [ -n "${CURL_DOWNLOAD_FILE:-}" ] || exit 1
+    emit <"$CURL_DOWNLOAD_FILE"
+    ;;
   *authorities-v4.txt)
-    cat <<'EOF'
+    emit <<'EOF'
 header
 header
 header
@@ -19,7 +46,7 @@ header
 EOF
     ;;
   *authorities-v6.txt)
-    cat <<'EOF'
+    emit <<'EOF'
 header
 header
 header
@@ -28,7 +55,7 @@ header
 EOF
     ;;
   *snowflake.txt)
-    cat <<'EOF'
+    emit <<'EOF'
 header
 header
 header
@@ -36,7 +63,7 @@ header
 EOF
     ;;
   *snowflake-v6.txt)
-    cat <<'EOF'
+    emit <<'EOF'
 header
 header
 header

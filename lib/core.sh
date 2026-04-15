@@ -15,6 +15,7 @@ tor_ddos_set_defaults() {
   SOCKSTAT_CMD=${SOCKSTAT_CMD:-sockstat}
   CRONTAB_CMD=${CRONTAB_CMD:-crontab}
   IFCONFIG_CMD=${IFCONFIG_CMD:-ifconfig}
+  RELEASE_BASE_URL=${RELEASE_BASE_URL:-https://github.com/MinorGlitch/orport-guard/releases/latest/download}
   DEFAULT_MAX_SRC_STATES=8
   DEFAULT_MAX_SRC_CONN=8
   DEFAULT_MAX_SRC_CONN_RATE_COUNT=9
@@ -174,6 +175,12 @@ tor_ddos_pfctl_anchor_table() {
   "$PFCTL_CMD" -a "$anchor" -t "$table" "$@"
 }
 
+tor_ddos_is_source_tree_invocation() {
+  [ -f "$ROOT_DIR/lib/pf.sh" ] &&
+    [ -f "$ROOT_DIR/bin/orport-guard" ] &&
+    [ "$PROGRAM_PATH" = "$ROOT_DIR/bin/$PROGRAM_NAME" ]
+}
+
 tor_ddos_is_root() {
   [ "$(id -u 2>/dev/null || echo 1)" = "0" ]
 }
@@ -218,6 +225,30 @@ tor_ddos_reexec_with_privileges_if_needed() {
   eval "exec env TOR_DDOS_ALREADY_ESCALATED=1 $helper $(tor_ddos_shell_quote "$PROGRAM_PATH") $quoted_argv"
 }
 
+tor_ddos_program_path_writable() {
+  [ -w "$PROGRAM_PATH" ] && return 0
+  program_dir=$(dirname -- "$PROGRAM_PATH")
+  [ -w "$program_dir" ]
+}
+
+tor_ddos_reexec_update_with_privileges_if_needed() {
+  quoted_argv=$1
+
+  [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ] && return 0
+  tor_ddos_program_path_writable && return 0
+  tor_ddos_is_root && return 0
+
+  if [ "${TOR_DDOS_ALREADY_ESCALATED:-0}" = "1" ]; then
+    tor_ddos_die "update still cannot replace $PROGRAM_PATH after trying doas/sudo"
+  fi
+
+  helper=$(tor_ddos_privilege_helper) ||
+    tor_ddos_die "update cannot replace $PROGRAM_PATH; rerun with doas or sudo"
+
+  tor_ddos_log "update needs write access to $PROGRAM_PATH; re-running via $helper"
+  eval "exec env TOR_DDOS_ALREADY_ESCALATED=1 $helper $(tor_ddos_shell_quote "$PROGRAM_PATH") $quoted_argv"
+}
+
 tor_ddos_pf_mutation_allowed() {
   if [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ]; then
     return 0
@@ -244,6 +275,23 @@ tor_ddos_require_root() {
   if ! tor_ddos_is_root; then
     tor_ddos_die "this command must run as root"
   fi
+}
+
+tor_ddos_download_file() {
+  url=$1
+  destination=$2
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" >"$destination"
+    return 0
+  fi
+
+  if command -v fetch >/dev/null 2>&1; then
+    fetch -qo "$destination" "$url"
+    return 0
+  fi
+
+  tor_ddos_die "neither curl nor fetch is available to download $url"
 }
 
 tor_ddos_crontab_mutation_allowed() {

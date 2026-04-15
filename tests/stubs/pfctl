@@ -65,6 +65,9 @@ if [ "$#" -ge 7 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ 
   anchor=$2
   table=$4
   cp "$8" "$STATE_DIR/table-${anchor}-$table.txt"
+  if [ "${PFCTL_REPLACE_NO_CHANGES:-0}" = "1" ]; then
+    printf 'no changes.\n' >&2
+  fi
   exit 0
 fi
 

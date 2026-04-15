@@ -98,6 +98,18 @@ test_enable_installs_reload_and_apply() {
   pass "enable installs the hook, reloads PF, and applies the anchor"
 }
 
+test_enable_collapses_pf_no_changes_noise() {
+  pf_conf=$TEST_ROOT/pf-enable-no-changes.conf
+  printf 'set skip on lo0\n' >"$pf_conf"
+  output=$TEST_ROOT/enable-no-changes.out
+
+  PFCTL_REPLACE_NO_CHANGES=1 run_cli --pf-conf "$pf_conf" --state-dir "$TEST_ROOT/state-enable-no-changes" --torrc "$FIXTURE_DIR/torrc-ipv4.conf" enable >"$output" 2>&1
+
+  assert_contains "$output" "trust tables: IPv4 unchanged, IPv6 unchanged" "enable should summarize unchanged trust tables clearly"
+  assert_not_contains "$output" "no changes." "enable should not leak raw duplicate pfctl no-changes output"
+  pass "enable summarizes unchanged trust tables once"
+}
+
 test_apply_status_refresh_disable() {
   mkdir -p "$TEST_ROOT/pfstate"
   : >"$TEST_ROOT/pfctl.log"
@@ -189,6 +201,7 @@ register_test test_status_reports_missing_profile_stamp
 register_test test_install_hook_is_idempotent
 register_test test_install_and_remove_cron
 register_test test_enable_installs_reload_and_apply
+register_test test_enable_collapses_pf_no_changes_noise
 register_test test_apply_status_refresh_disable
 register_test test_status_reports_cron_managed_expiry
 register_test test_status_reports_target_mismatch_hint

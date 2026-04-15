@@ -61,6 +61,15 @@ test_remove_cron_rejects_runtime_flags() {
   pass "remove-cron rejects runtime flags"
 }
 
+test_update_rejects_runtime_flags() {
+  output=$TEST_ROOT/update-flag-fail.out
+  if run_cli --state-dir "$TEST_ROOT/state-update-flag" update >"$output" 2>&1; then
+    fail "update should reject unrelated runtime flags"
+  fi
+  assert_contains "$output" "option --state-dir is not supported for update" "update should reject runtime state flags"
+  pass "update rejects runtime flags"
+}
+
 test_status_auto_escalates_via_doas() {
   rm -f "$TEST_ROOT/doas.log"
   status_out=$TEST_ROOT/status-escalated.out
@@ -89,5 +98,6 @@ register_test test_pfctl_stub_rejects_unknown_invocations
 register_test test_status_rejects_profile_override
 register_test test_install_hook_rejects_runtime_target_flags
 register_test test_remove_cron_rejects_runtime_flags
+register_test test_update_rejects_runtime_flags
 register_test test_status_auto_escalates_via_doas
 register_test test_apply_auto_escalates_via_doas

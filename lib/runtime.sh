@@ -1,10 +1,38 @@
+tor_ddos_replace_anchor_table() {
+  family_label=$1
+  table_name=$2
+  table_file=$3
+
+  output=$(tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$table_name" -T replace -f "$table_file" 2>&1) ||
+    tor_ddos_die "failed to refresh $family_label trust table for $PF_ANCHOR"
+
+  normalized_output=$(printf '%s\n' "$output" | awk 'NF')
+  if [ -z "$normalized_output" ]; then
+    printf '%s refreshed\n' "$family_label"
+    return 0
+  fi
+
+  if printf '%s\n' "$normalized_output" | awk '$0 != "no changes." { exit 1 }'; then
+    printf '%s unchanged\n' "$family_label"
+    return 0
+  fi
+
+  printf '%s refreshed\n' "$family_label"
+}
+
 tor_ddos_apply_tables() {
+  table_statuses=
+  separator=
+
   if tor_ddos_is_true "$ENABLE_IPV4"; then
-    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V4_TABLE" -T replace -f "$TRUST_V4_FILE" >/dev/null
+    table_statuses="${table_statuses}${separator}$(tor_ddos_replace_anchor_table "IPv4" "$TRUST_V4_TABLE" "$TRUST_V4_FILE")"
+    separator=', '
   fi
   if tor_ddos_is_true "$ENABLE_IPV6"; then
-    tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V6_TABLE" -T replace -f "$TRUST_V6_FILE" >/dev/null
+    table_statuses="${table_statuses}${separator}$(tor_ddos_replace_anchor_table "IPv6" "$TRUST_V6_TABLE" "$TRUST_V6_FILE")"
   fi
+
+  [ -n "$table_statuses" ] && tor_ddos_log "trust tables: $table_statuses"
 }
 
 tor_ddos_cleanup_legacy_global_tables() {
@@ -237,4 +265,38 @@ tor_ddos_disable() {
   tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V6_TABLE" -T flush >/dev/null 2>&1 || true
   rm -f "$LOADED_PROFILE_FILE"
   tor_ddos_log "disabled PF anchor $PF_ANCHOR"
+}
+
+tor_ddos_update() {
+  quoted_argv=${1:-}
+
+  if tor_ddos_is_source_tree_invocation; then
+    tor_ddos_die "update only supports the standalone release artifact; use scripts/build-release.sh locally or run the downloaded release script"
+  fi
+
+  tor_ddos_reexec_update_with_privileges_if_needed "$quoted_argv"
+
+  program_dir=$(dirname -- "$PROGRAM_PATH")
+  tmp_file=$(mktemp "$program_dir/.orport-guard.update.XXXXXX")
+  trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
+
+  update_url=$RELEASE_BASE_URL/orport-guard
+  tor_ddos_download_file "$update_url" "$tmp_file" ||
+    tor_ddos_die "failed to download update from $update_url"
+
+  sh -n "$tmp_file" >/dev/null 2>&1 ||
+    tor_ddos_die "downloaded update failed shell syntax validation"
+
+  chmod +x "$tmp_file"
+
+  if cmp -s "$tmp_file" "$PROGRAM_PATH"; then
+    rm -f "$tmp_file"
+    trap - EXIT HUP INT TERM
+    tor_ddos_log "already up to date: $PROGRAM_PATH"
+    return 0
+  fi
+
+  mv "$tmp_file" "$PROGRAM_PATH"
+  trap - EXIT HUP INT TERM
+  tor_ddos_log "updated $PROGRAM_PATH from $update_url"
 }
