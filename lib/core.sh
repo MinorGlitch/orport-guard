@@ -174,6 +174,50 @@ tor_ddos_pfctl_anchor_table() {
   "$PFCTL_CMD" -a "$anchor" -t "$table" "$@"
 }
 
+tor_ddos_is_root() {
+  [ "$(id -u 2>/dev/null || echo 1)" = "0" ]
+}
+
+tor_ddos_privilege_helper() {
+  if command -v doas >/dev/null 2>&1; then
+    printf 'doas\n'
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    printf 'sudo\n'
+    return 0
+  fi
+  return 1
+}
+
+tor_ddos_command_needs_privileges() {
+  case "$1" in
+    enable|check|apply|refresh|expire|status|install-hook|install-cron|remove-cron|disable)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+tor_ddos_reexec_with_privileges_if_needed() {
+  command_name=$1
+  quoted_argv=$2
+
+  [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ] && return 0
+  tor_ddos_command_needs_privileges "$command_name" || return 0
+  tor_ddos_is_root && return 0
+
+  if [ "${TOR_DDOS_ALREADY_ESCALATED:-0}" = "1" ]; then
+    tor_ddos_die "$command_name still lacks privileges after trying doas/sudo"
+  fi
+
+  helper=$(tor_ddos_privilege_helper) ||
+    tor_ddos_die "$command_name needs privileged access; rerun with doas or sudo"
+
+  tor_ddos_log "$command_name needs privileged access; re-running via $helper"
+  eval "exec env TOR_DDOS_ALREADY_ESCALATED=1 $helper $(tor_ddos_shell_quote "$PROGRAM_PATH") $quoted_argv"
+}
+
 tor_ddos_pf_mutation_allowed() {
   if [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ]; then
     return 0
@@ -183,7 +227,7 @@ tor_ddos_pf_mutation_allowed() {
     tor_ddos_die "PF mutation commands are supported on FreeBSD only; set TOR_DDOS_BSD_ALLOW_UNSUPPORTED=1 for testing"
   fi
 
-  if [ "$(id -u 2>/dev/null || echo 1)" != "0" ]; then
+  if ! tor_ddos_is_root; then
     tor_ddos_die "PF mutation commands must run as root"
   fi
 }
@@ -197,7 +241,7 @@ tor_ddos_require_crontab() {
 }
 
 tor_ddos_require_root() {
-  if [ "$(id -u 2>/dev/null || echo 1)" != "0" ]; then
+  if ! tor_ddos_is_root; then
     tor_ddos_die "this command must run as root"
   fi
 }
@@ -295,6 +339,14 @@ tor_ddos_shell_quote() {
       printf '%s' "$value"
       ;;
   esac
+}
+
+tor_ddos_build_quoted_argv() {
+  quoted=
+  for arg in "$@"; do
+    quoted="$quoted $(tor_ddos_shell_quote "$arg")"
+  done
+  printf '%s\n' "$(tor_ddos_trim_words "$quoted")"
 }
 
 tor_ddos_oldest_epoch() {

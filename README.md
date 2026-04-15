@@ -59,6 +59,9 @@ Flags are command-scoped. For example, `status` no longer accepts `--profile`,
 because it reports the live loaded profile recorded during `enable` / `apply`
 instead of trusting a caller-supplied override.
 
+Commands that need PF or crontab access will try to re-run themselves through
+`doas`, then `sudo`, if you forgot to elevate them manually.
+
 ## Release artifact
 
 The source tree stays modular, but releases are bundled into one standalone

@@ -55,3 +55,19 @@ run_cli() {
   PATH="$STUB_DIR:$PATH" \
   "$CLI" "$@"
 }
+
+run_cli_with_escalation() {
+  PFCTL_LOG=$TEST_ROOT/pfctl.log \
+  PFCTL_STATE_DIR=$TEST_ROOT/pfstate \
+  PFCTL_HAS_HOOK=${PFCTL_HAS_HOOK:-1} \
+  PFCTL_VVS_RULES_FIXTURE=${PFCTL_VVS_RULES_FIXTURE:-} \
+  CRONTAB_FILE=$TEST_ROOT/crontab \
+  SOCKSTAT_FIXTURE=${SOCKSTAT_FIXTURE:-} \
+  IFCONFIG_FIXTURE=${IFCONFIG_FIXTURE:-} \
+  DOAS_LOG=$TEST_ROOT/doas.log \
+  PFCTL_CMD=pfctl \
+  SOCKSTAT_CMD=sockstat \
+  IFCONFIG_CMD=ifconfig \
+  PATH="$STUB_DIR:$PATH" \
+  "$CLI" "$@"
+}

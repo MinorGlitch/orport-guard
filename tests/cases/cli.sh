@@ -61,6 +61,27 @@ test_remove_cron_rejects_runtime_flags() {
   pass "remove-cron rejects runtime flags"
 }
 
+test_status_auto_escalates_via_doas() {
+  rm -f "$TEST_ROOT/doas.log"
+  status_out=$TEST_ROOT/status-escalated.out
+  run_cli_with_escalation status >"$status_out" 2>&1
+  assert_contains "$TEST_ROOT/doas.log" "$CLI status" "status should re-exec itself through doas when not already privileged"
+  assert_contains "$status_out" "Anchor: orport-guard" "status should still run normally after privilege escalation"
+  pass "status auto-escalates via doas"
+}
+
+test_apply_auto_escalates_via_doas() {
+  rm -f "$TEST_ROOT/doas.log"
+  : >"$TEST_ROOT/pfctl.log"
+  TOR_DDOS_ESCALATED_ALLOW_UNSUPPORTED=1 run_cli_with_escalation \
+    --state-dir "$TEST_ROOT/state-auto-escalate-apply" \
+    --torrc "$FIXTURE_DIR/torrc-ipv4.conf" \
+    apply >/dev/null
+  assert_contains "$TEST_ROOT/doas.log" "$CLI --state-dir $TEST_ROOT/state-auto-escalate-apply --torrc $FIXTURE_DIR/torrc-ipv4.conf apply" "apply should re-exec itself through doas when not already privileged"
+  assert_contains "$TEST_ROOT/pfctl.log" "-a orport-guard -f $TEST_ROOT/state-auto-escalate-apply/orport_guard-anchor.conf" "apply should still execute after privilege escalation"
+  pass "apply auto-escalates via doas"
+}
+
 register_test test_conflicting_ip_family_flags_fail
 register_test test_trailing_args_after_command_fail
 register_test test_missing_explicit_config_fails
@@ -68,3 +89,5 @@ register_test test_pfctl_stub_rejects_unknown_invocations
 register_test test_status_rejects_profile_override
 register_test test_install_hook_rejects_runtime_target_flags
 register_test test_remove_cron_rejects_runtime_flags
+register_test test_status_auto_escalates_via_doas
+register_test test_apply_auto_escalates_via_doas

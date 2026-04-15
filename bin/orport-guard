@@ -11,6 +11,8 @@ TOR_DDOS_LIB_DIR=$ROOT_DIR/lib
 . "$ROOT_DIR/lib/pf.sh"
 . "$ROOT_DIR/lib/cli.sh"
 
+ORIGINAL_ARGV=$(tor_ddos_build_quoted_argv "$@")
+
 usage() {
   cat <<EOF
 Usage: $PROGRAM_NAME [options] <command>
@@ -222,6 +224,7 @@ EXTRA_TRUST=$(tor_ddos_trim_words "$EXTRA_TRUST")
 EXEMPT_SERVICES=$(tor_ddos_trim_words "$EXEMPT_SERVICES")
 
 tor_ddos_finalize_paths
+tor_ddos_reexec_with_privileges_if_needed "$COMMAND" "$ORIGINAL_ARGV"
 
 case "$COMMAND" in
   enable)
