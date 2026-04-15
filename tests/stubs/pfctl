@@ -1,0 +1,65 @@
+#!/bin/sh
+
+set -eu
+
+STATE_DIR=${PFCTL_STATE_DIR:?}
+LOG_FILE=${PFCTL_LOG:?}
+mkdir -p "$STATE_DIR"
+
+printf '%s\n' "$*" >>"$LOG_FILE"
+
+if [ "$#" -eq 1 ] && [ "$1" = "-sr" ]; then
+  if [ "${PFCTL_HAS_HOOK:-0}" = "1" ]; then
+    printf 'anchor "tor-anchor"\n'
+  fi
+  exit 0
+fi
+
+if [ "$#" -ge 4 ] && [ "$1" = "-a" ] && [ "$3" = "-f" ]; then
+  anchor=$2
+  cp "$4" "$STATE_DIR/anchor-$(printf '%s' "$anchor" | tr '/' '_').conf"
+  exit 0
+fi
+
+if [ "$#" -ge 3 ] && [ "$1" = "-a" ] && [ "$3" = "-sr" ]; then
+  anchor=$2
+  file="$STATE_DIR/anchor-$(printf '%s' "$anchor" | tr '/' '_').conf"
+  [ -f "$file" ] && cat "$file"
+  exit 0
+fi
+
+if [ "$#" -ge 4 ] && [ "$1" = "-a" ] && [ "$3" = "-vvs" ] && [ "$4" = "rules" ]; then
+  anchor=$2
+  file="$STATE_DIR/anchor-$(printf '%s' "$anchor" | tr '/' '_').conf"
+  [ -f "$file" ] && cat "$file"
+  exit 0
+fi
+
+if [ "$#" -ge 5 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "replace" ] && [ "$5" = "-f" ]; then
+  table=$2
+  cp "$6" "$STATE_DIR/table-$table.txt"
+  exit 0
+fi
+
+if [ "$#" -ge 4 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "show" ]; then
+  table=$2
+  file="$STATE_DIR/table-$table.txt"
+  [ -f "$file" ] && cat "$file"
+  exit 0
+fi
+
+if [ "$#" -ge 4 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "flush" ]; then
+  table=$2
+  : >"$STATE_DIR/table-$table.txt"
+  exit 0
+fi
+
+if [ "$#" -ge 4 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "kill" ]; then
+  exit 0
+fi
+
+if [ "$#" -eq 2 ] && [ "$1" = "-s" ] && [ "$2" = "state" ]; then
+  exit 0
+fi
+
+exit 0

@@ -1,0 +1,46 @@
+#!/bin/sh
+
+url=
+for arg in "$@"; do
+  url=$arg
+done
+
+case "$url" in
+  *authorities-v4.txt)
+    cat <<'EOF'
+header
+header
+header
+128.31.0.39
+171.25.193.9
+EOF
+    ;;
+  *authorities-v6.txt)
+    cat <<'EOF'
+header
+header
+header
+2001:67c:289c::9
+2610:1c0:0:5::131
+EOF
+    ;;
+  *snowflake.txt)
+    cat <<'EOF'
+header
+header
+header
+141.212.118.18
+EOF
+    ;;
+  *snowflake-v6.txt)
+    cat <<'EOF'
+header
+header
+header
+2607:f018:600:8:be30:5bff:fef1:c6fa
+EOF
+    ;;
+  *)
+    exit 1
+    ;;
+esac

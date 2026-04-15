@@ -1,0 +1,165 @@
+#!/bin/sh
+
+set -eu
+
+PROGRAM_NAME=${0##*/}
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+. "$ROOT_DIR/lib/pf.sh"
+
+usage() {
+  cat <<EOF
+Usage: $PROGRAM_NAME [options] <command>
+
+Commands:
+  apply      Render and load the PF anchor, then refresh trust tables.
+  refresh    Refresh trust tables only.
+  render     Print the generated PF anchor to stdout.
+  status     Show discovered targets and PF status for this tool.
+  disable    Disable only the tool-managed PF anchor and tables.
+
+Options:
+  -c, --config PATH           Use an alternate config file.
+      --state-dir PATH        Override the state directory.
+      --anchor NAME           Override the PF anchor name.
+      --render-file PATH      Override the rendered anchor path.
+      --torrc PATH            Add a torrc path for discovery.
+      --target VALUE          Add an explicit target (IPv4:port or [IPv6]:port).
+      --trust VALUE           Add an explicit trusted IP or network.
+      --service VALUE         Add an exempt local service (IPv4:port or [IPv6]:port).
+      --ipv4-only             Disable IPv6 rendering.
+      --ipv6-only             Disable IPv4 rendering.
+  -h, --help                  Show this help text.
+
+Config precedence:
+  CLI flags override the config file, which overrides discovery defaults.
+EOF
+}
+
+CONFIG_FILE=
+COMMAND=
+CLI_STATE_DIR=
+CLI_ANCHOR=
+CLI_RENDER_FILE=
+CLI_TORRC_PATHS=
+CLI_TARGETS=
+CLI_TRUST=
+CLI_SERVICES=
+CLI_ENABLE_IPV4=
+CLI_ENABLE_IPV6=
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    apply|refresh|render|status|disable)
+      COMMAND=$1
+      shift
+      break
+      ;;
+    -c|--config)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CONFIG_FILE=$2
+      shift 2
+      ;;
+    --state-dir)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_STATE_DIR=$2
+      shift 2
+      ;;
+    --anchor)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_ANCHOR=$2
+      shift 2
+      ;;
+    --render-file)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_RENDER_FILE=$2
+      shift 2
+      ;;
+    --torrc)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_TORRC_PATHS="$CLI_TORRC_PATHS $2"
+      shift 2
+      ;;
+    --target)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_TARGETS="$CLI_TARGETS $2"
+      shift 2
+      ;;
+    --trust)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_TRUST="$CLI_TRUST $2"
+      shift 2
+      ;;
+    --service)
+      [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
+      CLI_SERVICES="$CLI_SERVICES $2"
+      shift 2
+      ;;
+    --ipv4-only)
+      CLI_ENABLE_IPV4=1
+      CLI_ENABLE_IPV6=0
+      shift
+      ;;
+    --ipv6-only)
+      CLI_ENABLE_IPV4=0
+      CLI_ENABLE_IPV6=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      tor_ddos_die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[ -n "$COMMAND" ] || {
+  usage >&2
+  exit 2
+}
+
+tor_ddos_set_defaults "$ROOT_DIR"
+
+if [ -n "$CONFIG_FILE" ]; then
+  tor_ddos_load_config "$CONFIG_FILE"
+else
+  tor_ddos_load_config "$CONFIG_FILE_DEFAULT"
+fi
+
+[ -z "$CLI_STATE_DIR" ] || STATE_DIR=$CLI_STATE_DIR
+[ -z "$CLI_ANCHOR" ] || PF_ANCHOR=$CLI_ANCHOR
+[ -z "$CLI_RENDER_FILE" ] || RENDER_FILE=$CLI_RENDER_FILE
+[ -z "$CLI_TORRC_PATHS" ] || TORRC_PATHS="$TORRC_PATHS $CLI_TORRC_PATHS"
+[ -z "$CLI_TARGETS" ] || TARGETS="$TARGETS $CLI_TARGETS"
+[ -z "$CLI_TRUST" ] || EXTRA_TRUST="$EXTRA_TRUST $CLI_TRUST"
+[ -z "$CLI_SERVICES" ] || EXEMPT_SERVICES="$EXEMPT_SERVICES $CLI_SERVICES"
+[ -z "$CLI_ENABLE_IPV4" ] || ENABLE_IPV4=$CLI_ENABLE_IPV4
+[ -z "$CLI_ENABLE_IPV6" ] || ENABLE_IPV6=$CLI_ENABLE_IPV6
+
+TORRC_PATHS=$(tor_ddos_trim_words "$TORRC_PATHS")
+TARGETS=$(tor_ddos_trim_words "$TARGETS")
+EXTRA_TRUST=$(tor_ddos_trim_words "$EXTRA_TRUST")
+EXEMPT_SERVICES=$(tor_ddos_trim_words "$EXEMPT_SERVICES")
+
+tor_ddos_finalize_paths
+
+case "$COMMAND" in
+  apply)
+    tor_ddos_apply
+    ;;
+  refresh)
+    tor_ddos_refresh
+    ;;
+  render)
+    tor_ddos_render
+    ;;
+  status)
+    tor_ddos_status
+    ;;
+  disable)
+    tor_ddos_disable
+    ;;
+esac

@@ -1,0 +1,5 @@
+#!/bin/sh
+
+if [ -n "${SOCKSTAT_FIXTURE:-}" ] && [ -f "$SOCKSTAT_FIXTURE" ]; then
+  cat "$SOCKSTAT_FIXTURE"
+fi
