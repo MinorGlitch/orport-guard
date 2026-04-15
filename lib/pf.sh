@@ -714,6 +714,13 @@ tor_ddos_apply_tables() {
   fi
 }
 
+tor_ddos_cleanup_legacy_global_tables() {
+  tor_ddos_pfctl -t "$TRUST_V4_TABLE" -T kill >/dev/null 2>&1 || true
+  tor_ddos_pfctl -t "$TRUST_V6_TABLE" -T kill >/dev/null 2>&1 || true
+  tor_ddos_pfctl -t "$BLOCK_V4_TABLE" -T kill >/dev/null 2>&1 || true
+  tor_ddos_pfctl -t "$BLOCK_V6_TABLE" -T kill >/dev/null 2>&1 || true
+}
+
 tor_ddos_prepare_anchor() {
   tor_ddos_require_directory "$STATE_DIR"
 
@@ -778,6 +785,7 @@ tor_ddos_expire() {
 tor_ddos_enable() {
   tor_ddos_pf_mutation_allowed
   tor_ddos_require_pfctl
+  tor_ddos_cleanup_legacy_global_tables
   tor_ddos_prepare_anchor
   tor_ddos_check_anchor_syntax
 
@@ -796,6 +804,7 @@ tor_ddos_enable() {
 tor_ddos_apply() {
   tor_ddos_pf_mutation_allowed
   tor_ddos_require_pfctl
+  tor_ddos_cleanup_legacy_global_tables
   tor_ddos_prepare_anchor
 
   if ! tor_ddos_root_hook_present; then
@@ -814,6 +823,7 @@ tor_ddos_apply() {
 tor_ddos_refresh() {
   tor_ddos_pf_mutation_allowed
   tor_ddos_require_pfctl
+  tor_ddos_cleanup_legacy_global_tables
   tor_ddos_require_directory "$STATE_DIR"
   tor_ddos_fetch_trust_lists
   tor_ddos_apply_tables
@@ -960,6 +970,7 @@ tor_ddos_disable() {
   tor_ddos_require_pfctl
 
   tor_ddos_pfctl -a "$PF_ANCHOR" -f /dev/null >/dev/null 2>&1 || true
+  tor_ddos_cleanup_legacy_global_tables
   tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V4_TABLE" -T flush >/dev/null 2>&1 || true
   tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$TRUST_V6_TABLE" -T flush >/dev/null 2>&1 || true
   tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V4_TABLE" -T kill >/dev/null 2>&1 || true
