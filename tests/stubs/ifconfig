@@ -1,0 +1,5 @@
+#!/bin/sh
+
+if [ -n "${IFCONFIG_FIXTURE:-}" ] && [ -f "$IFCONFIG_FIXTURE" ]; then
+  cat "$IFCONFIG_FIXTURE"
+fi

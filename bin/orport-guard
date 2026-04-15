@@ -22,7 +22,7 @@ Commands:
   render     Print the generated PF anchor to stdout.
   status     Show discovered targets and PF status for this tool.
   install-hook
-             Ensure the root pf.conf contains anchor "tor-anchor".
+             Ensure the root pf.conf contains anchor "orport-guard".
   install-cron
              Install managed cron entries for expiry and trust refresh.
   remove-cron

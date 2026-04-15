@@ -1,0 +1,4 @@
+@0 block drop in quick inet proto tcp from <orport_guard_block_v4:0> to 192.0.2.12 port = 9001 label "orport-guard block 192.0.2.12:9001"
+  [ Evaluations: 250        Packets: 0         Bytes: 0           States: 0     ]
+@1 pass in quick inet proto tcp from any to 192.0.2.12 port = 9001 flags S/SA keep state (source-track rule, max-src-states 4, max-src-conn 4, max-src-conn-rate 7/1, overload <orport_guard_block_v4> flush global) label "orport-guard protect 192.0.2.12:9001"
+  [ Evaluations: 250        Packets: 0         Bytes: 0           States: 0     ]

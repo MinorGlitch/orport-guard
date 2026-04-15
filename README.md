@@ -1,4 +1,4 @@
-# tor-anchor
+# orport-guard
 
 This is my attempt to make the Tor relay DDoS mitigation work that people have been doing on Linux usable on FreeBSD with PF.
 
@@ -6,7 +6,7 @@ The other projects in this space are built around `iptables`, `ipset`, `conntrac
 
 ## How does it work?
 
-`tor-anchor` manages one dedicated PF anchor for your relay ORPorts.
+`orport-guard` manages one dedicated PF anchor for your relay ORPorts.
 
 It does a few things:
 
@@ -30,23 +30,23 @@ The general rule set is:
 The main commands are:
 
 ```sh
-./bin/tor-anchor enable
-./bin/tor-anchor check
-./bin/tor-anchor apply
-./bin/tor-anchor refresh
-./bin/tor-anchor expire
-./bin/tor-anchor render
-./bin/tor-anchor status
-./bin/tor-anchor install-hook
-./bin/tor-anchor install-cron
-./bin/tor-anchor remove-cron
-./bin/tor-anchor disable
+./bin/orport-guard enable
+./bin/orport-guard check
+./bin/orport-guard apply
+./bin/orport-guard refresh
+./bin/orport-guard expire
+./bin/orport-guard render
+./bin/orport-guard status
+./bin/orport-guard install-hook
+./bin/orport-guard install-cron
+./bin/orport-guard remove-cron
+./bin/orport-guard disable
 ```
 
 If you just want the flags:
 
 ```sh
-./bin/tor-anchor --help
+./bin/orport-guard --help
 ```
 
 ## PF integration
@@ -56,13 +56,13 @@ This tool only manages one anchor and the tables used by that anchor.
 Your main `pf.conf` must contain:
 
 ```pf
-anchor "tor-anchor"
+anchor "orport-guard"
 ```
 
 You can add that line with the CLI:
 
 ```sh
-./bin/tor-anchor install-hook
+./bin/orport-guard install-hook
 ```
 
 That edits `/etc/pf.conf` by default. If you keep your PF config somewhere else, use `--pf-conf /path/to/pf.conf`.
@@ -78,7 +78,7 @@ pfctl -f /etc/pf.conf
 That is the only required root hook. After that, `apply` will render and load the managed anchor. By default the rendered file ends up here:
 
 ```text
-/var/db/tor-anchor/tor_anchor-anchor.conf
+/var/db/orport-guard/orport_guard-anchor.conf
 ```
 
 If you do not want to touch live PF yet, use `render` first, inspect the file, and run `pfctl -n` against it yourself.
@@ -88,9 +88,9 @@ If you do not want to touch live PF yet, use `render` first, inspect the file, a
 For most operators, the flow should be:
 
 ```sh
-./bin/tor-anchor check
-./bin/tor-anchor enable
-./bin/tor-anchor status
+./bin/orport-guard check
+./bin/orport-guard enable
+./bin/orport-guard status
 ```
 
 `check` renders the anchor and runs PF syntax checks without loading it.
@@ -98,7 +98,7 @@ For most operators, the flow should be:
 If you want exact expiry cleanup and periodic trust refresh, install the managed cron block afterwards:
 
 ```sh
-./bin/tor-anchor install-cron
+./bin/orport-guard install-cron
 ```
 
 If you want the lower-level steps, those still exist.
@@ -106,21 +106,123 @@ If you want the lower-level steps, those still exist.
 If discovery is not what you want yet, force the exact target:
 
 ```sh
-./bin/tor-anchor --target 198.51.100.10:9001 render
+./bin/orport-guard --target 198.51.100.10:9001 render
 ```
 
 If `TARGETS` or `--target` is set, explicit targets take precedence and autodiscovery is skipped.
 
+On NATed VPS setups, PF usually sees the post-NAT local address, not the public relay address.
+`orport-guard` now tries to correct that automatically:
+
+- if the configured target is not local and there is one clear PF-visible local address for that family, it rewrites the target to the local address and tells you
+- if there are multiple possible local addresses, it refuses to guess and exits with the candidate list
+
+That matters because a rule for the public IP can load cleanly and still never match a packet if the host actually receives traffic on a different local address such as `192.0.2.12`.
+
 When you are happy with what it found and rendered:
 
 ```sh
-./bin/tor-anchor apply
+./bin/orport-guard apply
 ```
 
 If you want to back it out:
 
 ```sh
-./bin/tor-anchor disable
+./bin/orport-guard disable
+```
+
+## FreeBSD deployment notes
+
+These are the things that matter most on a real FreeBSD relay.
+
+### PF usually sees the local post-NAT address
+
+On VPS setups with provider NAT or 1:1 forwarding, PF often sees the local address on the VM, not the public relay IP.
+
+That means a target such as:
+
+```text
+203.0.113.165:9001
+```
+
+can be correct from the outside and still be wrong for PF on the host.
+
+`orport-guard` now tries to correct that automatically when there is one clear local address for the listener. If there are multiple possible local addresses, it refuses to guess and tells you what the candidates are.
+
+If you need to confirm what PF is really seeing, look at the live packets on the real interface and check the destination address there.
+
+### Use `tcpdump` on the real interface, not `any`
+
+FreeBSD does not have Linux's `any` pseudo-interface.
+
+Find the interface first:
+
+```sh
+ifconfig -l
+ifconfig
+```
+
+Then capture on the real interface, for example:
+
+```sh
+doas tcpdump -ni ext0 'dst host 192.0.2.12 and tcp dst port 9001'
+```
+
+or more broadly:
+
+```sh
+doas tcpdump -ni ext0 'port 9001'
+```
+
+If `tcpdump` shows traffic for the relay port but the `orport-guard protect ...` rule still has zero packets and zero states, your target address is wrong for what PF is actually seeing.
+
+### Use anchor-scoped `pfctl` commands
+
+The managed trust and block tables live inside the `orport-guard` anchor.
+
+Do not inspect them with:
+
+```sh
+pfctl -s Tables
+```
+
+Use:
+
+```sh
+doas pfctl -a orport-guard -s Tables
+doas pfctl -a orport-guard -t orport_guard_trust_v4 -T show | wc -l
+doas pfctl -a orport-guard -t orport_guard_block_v4 -T show | wc -l
+doas pfctl -a orport-guard -vvs rules
+```
+
+That is the correct way to verify the live anchor state.
+
+### Verify the managed cron block
+
+If you install the managed cron entries:
+
+```sh
+./bin/orport-guard install-cron
+```
+
+verify them with:
+
+```sh
+doas crontab -l
+```
+
+and confirm that `status` reports:
+
+```text
+Cron installed: yes
+Block expiry: 300s (managed by cron)
+```
+
+You can also run the scheduled commands manually once:
+
+```sh
+doas ./bin/orport-guard expire
+doas ./bin/orport-guard refresh
 ```
 
 ## Configuration
@@ -128,7 +230,7 @@ If you want to back it out:
 The sample config is:
 
 ```text
-./etc/tor-anchor.conf
+./etc/orport-guard.conf
 ```
 
 It is just a shell config file. No YAML, no JSON, no extra parser.
@@ -161,7 +263,7 @@ The default profile is intentionally conservative.
 If your relay is under active ORPort abuse, use:
 
 ```sh
-./bin/tor-anchor --profile aggressive apply
+./bin/orport-guard --profile aggressive apply
 ```
 
 That profile tightens the defaults to roughly match the sharper Linux-era recipes:
@@ -173,11 +275,11 @@ That profile tightens the defaults to roughly match the sharper Linux-era recipe
 
 Timed block entries can be cleaned in two ways:
 
-- manually with `./bin/tor-anchor expire`
-- automatically with `./bin/tor-anchor install-cron`
+- manually with `./bin/orport-guard expire`
+- automatically with `./bin/orport-guard install-cron`
 
 Without cron, expiry is lazy on the next `enable`, `apply`, or `refresh` run once entries are older than the configured age.
-That means a `300` second ban is really "at least 300 seconds, then cleared on the next tor-anchor mutation run".
+That means a `300` second ban is really "at least 300 seconds, then cleared on the next orport-guard mutation run".
 The default profile also uses the same `300` second expiry and differs mainly in the softer connection and rate thresholds.
 
 ## What this is not

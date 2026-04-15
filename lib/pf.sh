@@ -2,9 +2,9 @@
 
 tor_ddos_set_defaults() {
   ROOT_DIR=${1:-$(pwd)}
-  CONFIG_FILE_DEFAULT=${CONFIG_FILE_DEFAULT:-"$ROOT_DIR/etc/tor-anchor.conf"}
-  STATE_DIR=${STATE_DIR:-/var/db/tor-anchor}
-  PF_ANCHOR=${PF_ANCHOR:-tor-anchor}
+  CONFIG_FILE_DEFAULT=${CONFIG_FILE_DEFAULT:-"$ROOT_DIR/etc/orport-guard.conf"}
+  STATE_DIR=${STATE_DIR:-/var/db/orport-guard}
+  PF_ANCHOR=${PF_ANCHOR:-orport-guard}
   PF_CONF=${PF_CONF:-/etc/pf.conf}
   PROFILE=${PROFILE:-default}
   ENABLE_IPV4=${ENABLE_IPV4:-1}
@@ -16,6 +16,7 @@ tor_ddos_set_defaults() {
   PFCTL_CMD=${PFCTL_CMD:-pfctl}
   SOCKSTAT_CMD=${SOCKSTAT_CMD:-sockstat}
   CRONTAB_CMD=${CRONTAB_CMD:-crontab}
+  IFCONFIG_CMD=${IFCONFIG_CMD:-ifconfig}
   DEFAULT_MAX_SRC_STATES=8
   DEFAULT_MAX_SRC_CONN=8
   DEFAULT_MAX_SRC_CONN_RATE_COUNT=9
@@ -31,13 +32,15 @@ tor_ddos_set_defaults() {
 
 tor_ddos_finalize_paths() {
   TABLE_PREFIX=$(printf '%s' "$PF_ANCHOR" | tr -c 'A-Za-z0-9' '_' | sed 's/^_*//;s/_*$//')
-  [ -n "$TABLE_PREFIX" ] || TABLE_PREFIX=tor_anchor
+  [ -n "$TABLE_PREFIX" ] || TABLE_PREFIX=orport_guard
 
   RENDER_FILE=${RENDER_FILE:-"$STATE_DIR/$TABLE_PREFIX-anchor.conf"}
   TARGETS_FILE=$STATE_DIR/targets.txt
   TRUST_V4_FILE=$STATE_DIR/trust-v4.txt
   TRUST_V6_FILE=$STATE_DIR/trust-v6.txt
   LAST_OUTPUT_FILE=$STATE_DIR/last-render.out
+  LAST_REFRESH_FILE=$STATE_DIR/last-refresh.stamp
+  LAST_EXPIRE_FILE=$STATE_DIR/last-expire.stamp
 
   TRUST_V4_TABLE=${TABLE_PREFIX}_trust_v4
   TRUST_V6_TABLE=${TABLE_PREFIX}_trust_v6
@@ -164,6 +167,11 @@ tor_ddos_file_mtime_epoch() {
   return 1
 }
 
+tor_ddos_touch_file() {
+  file=$1
+  : >"$file"
+}
+
 tor_ddos_format_age() {
   seconds=${1:-0}
   if [ "$seconds" -lt 60 ]; then
@@ -174,6 +182,21 @@ tor_ddos_format_age() {
     printf '%sh' $((seconds / 3600))
   else
     printf '%sd' $((seconds / 86400))
+  fi
+}
+
+tor_ddos_format_last_run() {
+  file=$1
+  if mtime=$(tor_ddos_file_mtime_epoch "$file" 2>/dev/null); then
+    now=$(tor_ddos_now_epoch)
+    if [ "$mtime" -gt "$now" ]; then
+      age=0
+    else
+      age=$((now - mtime))
+    fi
+    printf '%s ago\n' "$(tor_ddos_format_age "$age")"
+  else
+    printf 'never\n'
   fi
 }
 
@@ -240,10 +263,10 @@ tor_ddos_cli_common_args() {
   if [ -n "$effective_config" ] && [ "$effective_config" != "$CONFIG_FILE_DEFAULT" ]; then
     args="$args --config $(tor_ddos_shell_quote "$effective_config")"
   fi
-  if [ "$STATE_DIR" != "/var/db/tor-anchor" ]; then
+  if [ "$STATE_DIR" != "/var/db/orport-guard" ]; then
     args="$args --state-dir $(tor_ddos_shell_quote "$STATE_DIR")"
   fi
-  if [ "$PF_ANCHOR" != "tor-anchor" ]; then
+  if [ "$PF_ANCHOR" != "orport-guard" ]; then
     args="$args --anchor $(tor_ddos_shell_quote "$PF_ANCHOR")"
   fi
   if [ "$PF_CONF" != "/etc/pf.conf" ]; then
@@ -275,10 +298,10 @@ tor_ddos_cron_block() {
   fi
 
   cat <<EOF
-# BEGIN tor-anchor
+# BEGIN orport-guard
 * * * * * $expire_cmd >/dev/null 2>&1
 17 */6 * * * $refresh_cmd >/dev/null 2>&1
-# END tor-anchor
+# END orport-guard
 EOF
 }
 
@@ -291,15 +314,15 @@ tor_ddos_crontab_list() {
 
 tor_ddos_crontab_strip_block() {
   awk '
-    /^# BEGIN tor-anchor$/ { skip = 1; next }
-    /^# END tor-anchor$/ { skip = 0; next }
+    /^# BEGIN orport-guard$/ { skip = 1; next }
+    /^# END orport-guard$/ { skip = 0; next }
     !skip { print }
   '
 }
 
 tor_ddos_cron_installed() {
   command -v "$CRONTAB_CMD" >/dev/null 2>&1 || return 1
-  tor_ddos_crontab_list | grep -Fqx '# BEGIN tor-anchor'
+  tor_ddos_crontab_list | grep -Fqx '# BEGIN orport-guard'
 }
 
 tor_ddos_http_get() {
@@ -442,6 +465,139 @@ tor_ddos_parse_socket_token() {
   esac
 }
 
+tor_ddos_pick_single_line() {
+  awk '
+    NF {
+      count++
+      if (count == 1) first = $0
+    }
+    END {
+      if (count == 1) {
+        print first
+      } else {
+        exit 1
+      }
+    }
+  '
+}
+
+tor_ddos_local_interface_addresses() {
+  family=$1
+  command -v "$IFCONFIG_CMD" >/dev/null 2>&1 || return 1
+
+  "$IFCONFIG_CMD" 2>/dev/null |
+    awk -v want="$family" '
+      /^[^[:space:]].*:$/ {
+        iface = $1
+        sub(/:$/, "", iface)
+        next
+      }
+      want == "inet" && $1 == "inet" {
+        addr = $2
+        if (iface ~ /^lo[0-9]*$/ || addr ~ /^127\./) next
+        print addr
+      }
+      want == "inet6" && $1 == "inet6" {
+        addr = $2
+        sub(/%.*$/, "", addr)
+        if (iface ~ /^lo[0-9]*$/ || addr == "::1" || addr ~ /^fe80:/) next
+        print addr
+      }
+    ' |
+    awk 'NF { if (!seen[$0]++) print $0 }'
+}
+
+tor_ddos_is_local_address() {
+  family=$1
+  addr=$2
+  tor_ddos_local_interface_addresses "$family" 2>/dev/null | grep -Fx -- "$addr" >/dev/null 2>&1
+}
+
+tor_ddos_sockstat_target_addresses() {
+  family=$1
+  port=$2
+  tor_ddos_discover_from_sockstat "$port" 2>/dev/null |
+    awk -F'|' -v want="$family" '$1 == want && NF == 3 { print $2 }' |
+    awk 'NF { if (!seen[$0]++) print $0 }'
+}
+
+tor_ddos_local_target_candidates() {
+  family=$1
+  port=$2
+  {
+    tor_ddos_sockstat_target_addresses "$family" "$port" 2>/dev/null || true
+    tor_ddos_local_interface_addresses "$family" 2>/dev/null || true
+  } | awk 'NF { if (!seen[$0]++) print $0 }'
+}
+
+tor_ddos_pf_visible_address_for_target() {
+  family=$1
+  port=$2
+
+  if candidate=$(tor_ddos_sockstat_target_addresses "$family" "$port" | tor_ddos_pick_single_line 2>/dev/null); then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  if candidate=$(tor_ddos_local_interface_addresses "$family" | tor_ddos_pick_single_line 2>/dev/null); then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
+
+tor_ddos_discover_from_local_interfaces() {
+  port=$1
+  found=0
+
+  if tor_ddos_is_true "$ENABLE_IPV4"; then
+    if addr=$(tor_ddos_local_interface_addresses inet | tor_ddos_pick_single_line 2>/dev/null); then
+      printf 'inet|%s|%s\n' "$addr" "$port"
+      found=1
+    fi
+  fi
+
+  if tor_ddos_is_true "$ENABLE_IPV6"; then
+    if addr=$(tor_ddos_local_interface_addresses inet6 | tor_ddos_pick_single_line 2>/dev/null); then
+      printf 'inet6|%s|%s\n' "$addr" "$port"
+      found=1
+    fi
+  fi
+
+  [ "$found" -eq 1 ]
+}
+
+tor_ddos_canonicalize_targets() {
+  input_file=$1
+  output_file=$2
+  : >"$output_file"
+
+  while IFS='|' read -r family addr port; do
+    [ -n "$family" ] || continue
+
+    if tor_ddos_is_local_address "$family" "$addr"; then
+      printf '%s|%s|%s\n' "$family" "$addr" "$port" >>"$output_file"
+      continue
+    fi
+
+    if candidate=$(tor_ddos_pf_visible_address_for_target "$family" "$port" 2>/dev/null); then
+      if [ "$candidate" != "$addr" ]; then
+        tor_ddos_log "notice: target $addr:$port is not PF-visible on this host; using local address $candidate:$port"
+      fi
+      printf '%s|%s|%s\n' "$family" "$candidate" "$port" >>"$output_file"
+      continue
+    fi
+
+    candidates=$(tor_ddos_local_target_candidates "$family" "$port" 2>/dev/null | tr '\n' ' ' | awk '{$1=$1; print}')
+    if [ -n "$candidates" ]; then
+      tor_ddos_die "target $addr:$port is not a local $family address PF will see; candidate local addresses: $candidates"
+    fi
+
+    printf '%s|%s|%s\n' "$family" "$addr" "$port" >>"$output_file"
+  done <"$input_file"
+}
+
 tor_ddos_discover_from_sockstat() {
   port=$1
   "$SOCKSTAT_CMD" -4 -6 -l -P tcp -p "$port" 2>/dev/null |
@@ -482,7 +638,7 @@ EOF
       }
     ' "$targets_tmp" >"$targets_tmp.final"
 
-    : >"$targets_tmp"
+    : >"$targets_tmp.filtered"
     while IFS='|' read -r family addr port; do
       [ -n "$family" ] || continue
       if [ "$family" = inet ] && ! tor_ddos_is_true "$ENABLE_IPV4"; then
@@ -491,8 +647,9 @@ EOF
       if [ "$family" = inet6 ] && ! tor_ddos_is_true "$ENABLE_IPV6"; then
         continue
       fi
-      printf '%s|%s|%s\n' "$family" "$addr" "$port" >>"$targets_tmp"
+      printf '%s|%s|%s\n' "$family" "$addr" "$port" >>"$targets_tmp.filtered"
     done <"$targets_tmp.final"
+    tor_ddos_canonicalize_targets "$targets_tmp.filtered" "$targets_tmp"
     return 0
   fi
 
@@ -520,7 +677,9 @@ EOF
   sort -u "$unresolved_tmp" 2>/dev/null | while IFS= read -r port; do
     [ -n "$port" ] || continue
     if ! tor_ddos_discover_from_sockstat "$port" >>"$resolved_tmp"; then
-      printf '%s\n' "$port" >>"$unresolved_remaining_tmp"
+      if ! tor_ddos_discover_from_local_interfaces "$port" >>"$resolved_tmp"; then
+        printf '%s\n' "$port" >>"$unresolved_remaining_tmp"
+      fi
     fi
   done
 
@@ -534,17 +693,7 @@ EOF
     }
   ' "$targets_tmp" >"$targets_tmp.final"
 
-  : >"$targets_tmp"
-  while IFS='|' read -r family addr port; do
-    [ -n "$family" ] || continue
-    if [ "$family" = inet ] && ! tor_ddos_is_true "$ENABLE_IPV4"; then
-      continue
-    fi
-    if [ "$family" = inet6 ] && ! tor_ddos_is_true "$ENABLE_IPV6"; then
-      continue
-    fi
-    printf '%s|%s|%s\n' "$family" "$addr" "$port" >>"$targets_tmp"
-  done <"$targets_tmp.final"
+  tor_ddos_canonicalize_targets "$targets_tmp.final" "$targets_tmp"
 
   if [ ! -s "$targets_tmp" ] && [ -s "$unresolved_remaining_tmp" ]; then
     ports=$(tr '\n' ' ' <"$unresolved_remaining_tmp" | awk '{$1=$1; print}')
@@ -596,7 +745,7 @@ tor_ddos_render_anchor_file() {
   tor_ddos_require_directory "$STATE_DIR"
 
   {
-    printf '# Generated by tor-anchor\n'
+    printf '# Generated by orport-guard\n'
     printf '# Main pf.conf must contain: anchor "%s"\n\n' "$PF_ANCHOR"
     printf 'table <%s> persist file "%s"\n' "$TRUST_V4_TABLE" "$TRUST_V4_FILE"
     printf 'table <%s> persist file "%s"\n' "$TRUST_V6_TABLE" "$TRUST_V6_FILE"
@@ -605,7 +754,7 @@ tor_ddos_render_anchor_file() {
 
     for service in $EXEMPT_SERVICES; do
       tor_ddos_split_service "$service" | while IFS='|' read -r family addr port; do
-        printf 'pass in quick %s proto tcp from any to %s port %s label "tor-anchor exempt %s:%s"\n' "$family" "$addr" "$port" "$addr" "$port"
+        printf 'pass in quick %s proto tcp from any to %s port %s label "orport-guard exempt %s:%s"\n' "$family" "$addr" "$port" "$addr" "$port"
       done
     done
 
@@ -621,9 +770,9 @@ tor_ddos_render_anchor_file() {
         block_table=$BLOCK_V6_TABLE
       fi
 
-      printf 'block in quick %s proto tcp from <%s> to %s port %s label "tor-anchor block %s:%s"\n' "$family" "$block_table" "$addr" "$port" "$addr" "$port"
-      printf 'pass in quick %s proto tcp from <%s> to %s port %s flags S/SA keep state label "tor-anchor trust %s:%s"\n' "$family" "$trust_table" "$addr" "$port" "$addr" "$port"
-      printf 'pass in quick %s proto tcp from any to %s port %s flags S/SA keep state (source-track rule, max-src-states %s, max-src-conn %s, max-src-conn-rate %s/%s, overload <%s> flush global) label "tor-anchor protect %s:%s"\n' \
+      printf 'block in quick %s proto tcp from <%s> to %s port %s label "orport-guard block %s:%s"\n' "$family" "$block_table" "$addr" "$port" "$addr" "$port"
+      printf 'pass in quick %s proto tcp from <%s> to %s port %s flags S/SA keep state label "orport-guard trust %s:%s"\n' "$family" "$trust_table" "$addr" "$port" "$addr" "$port"
+      printf 'pass in quick %s proto tcp from any to %s port %s flags S/SA keep state (source-track rule, max-src-states %s, max-src-conn %s, max-src-conn-rate %s/%s, overload <%s> flush global) label "orport-guard protect %s:%s"\n' \
         "$family" "$addr" "$port" "$MAX_SRC_STATES" "$MAX_SRC_CONN" "$MAX_SRC_CONN_RATE_COUNT" "$MAX_SRC_CONN_RATE_WINDOW" "$block_table" "$addr" "$port"
       printf '\n'
     done <"$targets_file"
@@ -700,7 +849,7 @@ tor_ddos_install_hook() {
     return 0
   fi
 
-  tmp_file=$PF_CONF.tor-anchor.$$
+  tmp_file=$PF_CONF.orport-guard.$$
   trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
   tor_ddos_rewrite_pf_conf_with_hook "$PF_CONF" "$tmp_file"
   mv "$tmp_file" "$PF_CONF"
@@ -761,6 +910,7 @@ tor_ddos_expire_block_tables_now() {
   if tor_ddos_is_true "$ENABLE_IPV6"; then
     tor_ddos_pfctl_anchor_table "$PF_ANCHOR" "$BLOCK_V6_TABLE" -T expire "$BLOCK_EXPIRE_SECONDS" >/dev/null 2>&1 || true
   fi
+  tor_ddos_touch_file "$LAST_EXPIRE_FILE"
 }
 
 tor_ddos_check() {
@@ -802,6 +952,7 @@ tor_ddos_enable() {
   tor_ddos_reload_pf_conf
   tor_ddos_pfctl -a "$PF_ANCHOR" -f "$RENDER_FILE" >/dev/null
   tor_ddos_apply_tables
+  tor_ddos_touch_file "$LAST_REFRESH_FILE"
   tor_ddos_expire_block_tables_now
   tor_ddos_log "enabled PF anchor $PF_ANCHOR from $RENDER_FILE"
 }
@@ -821,6 +972,7 @@ tor_ddos_apply() {
 
   tor_ddos_pfctl -a "$PF_ANCHOR" -f "$RENDER_FILE" >/dev/null
   tor_ddos_apply_tables
+  tor_ddos_touch_file "$LAST_REFRESH_FILE"
   tor_ddos_expire_block_tables_now
   tor_ddos_log "loaded PF anchor $PF_ANCHOR from $RENDER_FILE"
 }
@@ -832,6 +984,7 @@ tor_ddos_refresh() {
   tor_ddos_require_directory "$STATE_DIR"
   tor_ddos_fetch_trust_lists
   tor_ddos_apply_tables
+  tor_ddos_touch_file "$LAST_REFRESH_FILE"
   tor_ddos_expire_block_tables_now
   tor_ddos_log "refreshed trust tables for $PF_ANCHOR"
 }
@@ -840,7 +993,7 @@ tor_ddos_install_cron() {
   tor_ddos_pf_mutation_allowed
   tor_ddos_require_crontab
 
-  tmp_file=$(mktemp "${TMPDIR:-/tmp}/tor-anchor-cron.XXXXXX")
+  tmp_file=$(mktemp "${TMPDIR:-/tmp}/orport-guard-cron.XXXXXX")
   trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
   existing=$(tor_ddos_crontab_list | tor_ddos_crontab_strip_block)
 
@@ -862,7 +1015,7 @@ tor_ddos_remove_cron() {
   tor_ddos_pf_mutation_allowed
   tor_ddos_require_crontab
 
-  tmp_file=$(mktemp "${TMPDIR:-/tmp}/tor-anchor-cron.XXXXXX")
+  tmp_file=$(mktemp "${TMPDIR:-/tmp}/orport-guard-cron.XXXXXX")
   trap 'rm -f "$tmp_file"' EXIT HUP INT TERM
 
   tor_ddos_crontab_list | tor_ddos_crontab_strip_block >"$tmp_file"
@@ -904,8 +1057,50 @@ tor_ddos_status_anchor_loaded() {
   fi
 }
 
+tor_ddos_status_rule_hints() {
+  rules_file=$1
+  [ -f "$rules_file" ] || return 0
+
+  awk '
+    BEGIN {
+      evals = packets = states = -1
+      label = ""
+    }
+    /label "orport-guard protect / {
+      label = $0
+      sub(/^.*label "orport-guard protect /, "", label)
+      sub(/".*$/, "", label)
+      evals = packets = states = -1
+      next
+    }
+    label != "" && /\[ Evaluations:/ {
+      line = $0
+      sub(/^.*Evaluations:[[:space:]]*/, "", line)
+      evals = line + 0
+      sub(/^.*Packets:[[:space:]]*/, "", line)
+      packets = line + 0
+      sub(/^.*States:[[:space:]]*/, "", line)
+      states = line + 0
+      if (evals >= 100 && packets == 0 && states == 0) {
+        printf "  - protect rule for %s is being evaluated but has matched no packets or states; verify that PF sees the relay on the configured local address\n", label
+      }
+      label = ""
+      next
+    }
+    label != "" && /^@/ {
+      label = ""
+    }
+  ' "$rules_file"
+}
+
 tor_ddos_status() {
   tor_ddos_finalize_paths
+  rules_output_file=
+  if command -v "$PFCTL_CMD" >/dev/null 2>&1; then
+    tor_ddos_require_directory "$STATE_DIR"
+    rules_output_file=$STATE_DIR/status-rules.out
+    tor_ddos_pfctl -a "$PF_ANCHOR" -vvs rules >"$rules_output_file" 2>/dev/null || : >"$rules_output_file"
+  fi
   printf 'Anchor: %s\n' "$PF_ANCHOR"
   printf 'State dir: %s\n' "$STATE_DIR"
   printf 'Rendered anchor: %s\n' "$RENDER_FILE"
@@ -920,6 +1115,12 @@ tor_ddos_status() {
   else
     printf 'Block expiry: disabled\n'
   fi
+  printf 'Cron installed: '
+  if tor_ddos_cron_installed; then
+    printf 'yes\n'
+  else
+    printf 'no\n'
+  fi
   printf 'PF config hook: '
   if tor_ddos_pf_conf_has_hook; then
     printf 'yes\n'
@@ -933,17 +1134,23 @@ tor_ddos_status() {
     printf 'no\n'
   fi
   printf 'Anchor loaded: %s\n' "$(tor_ddos_status_anchor_loaded)"
+  printf 'Last refresh: %s\n' "$(tor_ddos_format_last_run "$LAST_REFRESH_FILE")"
+  if [ "$BLOCK_EXPIRE_SECONDS" -gt 0 ]; then
+    printf 'Last expire: %s\n' "$(tor_ddos_format_last_run "$LAST_EXPIRE_FILE")"
+  else
+    printf 'Last expire: disabled\n'
+  fi
   printf 'Trust table counts: IPv4=%s IPv6=%s\n' "$(tor_ddos_status_table_count "$TRUST_V4_TABLE")" "$(tor_ddos_status_table_count "$TRUST_V6_TABLE")"
   printf 'Block table counts: IPv4=%s IPv6=%s\n' "$(tor_ddos_status_table_count "$BLOCK_V4_TABLE")" "$(tor_ddos_status_table_count "$BLOCK_V6_TABLE")"
   if trust_age=$(tor_ddos_trust_age_seconds 2>/dev/null); then
     printf 'Trust data age: %s\n' "$(tor_ddos_format_age "$trust_age")"
     if [ "$trust_age" -gt 604800 ]; then
-      printf 'Trust data status: stale (run tor-anchor refresh)\n'
+      printf 'Trust data status: stale (run orport-guard refresh)\n'
     else
       printf 'Trust data status: fresh enough\n'
     fi
   else
-    printf 'Trust data age: unknown (run tor-anchor refresh)\n'
+    printf 'Trust data age: unknown (run orport-guard refresh)\n'
   fi
   printf '\nProtected targets:\n'
   if [ -s "$TARGETS_FILE" ]; then
@@ -955,22 +1162,29 @@ tor_ddos_status() {
     printf '  (none)\n'
   fi
 
-  if command -v "$PFCTL_CMD" >/dev/null 2>&1; then
+  if [ -n "$rules_output_file" ]; then
+    hints=$(tor_ddos_status_rule_hints "$rules_output_file" 2>/dev/null || true)
+    if [ -n "$hints" ]; then
+      printf '\nTarget hints:\n%s' "$hints"
+    fi
+  fi
+
+  if [ -n "$rules_output_file" ]; then
     printf '\nAnchor rules:\n'
-    tor_ddos_pfctl -a "$PF_ANCHOR" -vvs rules 2>/dev/null || true
+    cat "$rules_output_file"
   fi
 
   anchor_loaded=$(tor_ddos_status_anchor_loaded)
 
   printf '\nSuggested command: '
   if ! tor_ddos_pf_conf_has_hook; then
-    printf 'tor-anchor enable\n'
+    printf 'orport-guard enable\n'
   elif ! tor_ddos_root_hook_present; then
     printf 'pfctl -nf %s && pfctl -f %s\n' "$PF_CONF" "$PF_CONF"
   elif [ "$anchor_loaded" = "yes" ]; then
-    printf 'tor-anchor refresh\n'
+    printf 'orport-guard refresh\n'
   else
-    printf 'tor-anchor apply\n'
+    printf 'orport-guard apply\n'
   fi
 }
 

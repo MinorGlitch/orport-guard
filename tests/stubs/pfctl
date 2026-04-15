@@ -12,7 +12,7 @@ LIVE_HOOK_FILE=$STATE_DIR/live-hook
 
 if [ "$#" -eq 1 ] && [ "$1" = "-sr" ]; then
   if [ "${PFCTL_HAS_HOOK:-0}" = "1" ] || [ -f "$LIVE_HOOK_FILE" ]; then
-    printf 'anchor "tor-anchor"\n'
+    printf 'anchor "orport-guard"\n'
   fi
   exit 0
 fi
@@ -24,7 +24,7 @@ fi
 
 if [ "$#" -eq 2 ] && [ "$1" = "-f" ]; then
   [ -f "$2" ] || exit 1
-  if grep -F 'anchor "tor-anchor"' "$2" >/dev/null 2>&1; then
+  if grep -F 'anchor "orport-guard"' "$2" >/dev/null 2>&1; then
     : >"$LIVE_HOOK_FILE"
   else
     rm -f "$LIVE_HOOK_FILE"
@@ -52,6 +52,10 @@ fi
 
 if [ "$#" -ge 4 ] && [ "$1" = "-a" ] && [ "$3" = "-vvs" ] && [ "$4" = "rules" ]; then
   anchor=$2
+  if [ -n "${PFCTL_VVS_RULES_FIXTURE:-}" ] && [ -f "$PFCTL_VVS_RULES_FIXTURE" ]; then
+    cat "$PFCTL_VVS_RULES_FIXTURE"
+    exit 0
+  fi
   file="$STATE_DIR/anchor-$(printf '%s' "$anchor" | tr '/' '_').conf"
   [ -f "$file" ] && cat "$file"
   exit 0
