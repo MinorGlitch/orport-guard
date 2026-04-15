@@ -1,0 +1,465 @@
+tor_ddos_set_defaults() {
+  ROOT_DIR=${1:-$(pwd)}
+  CONFIG_FILE_DEFAULT=${CONFIG_FILE_DEFAULT:-"$ROOT_DIR/etc/orport-guard.conf"}
+  STATE_DIR=${STATE_DIR:-/var/db/orport-guard}
+  PF_ANCHOR=${PF_ANCHOR:-orport-guard}
+  PF_CONF=${PF_CONF:-/etc/pf.conf}
+  PROFILE=${PROFILE:-default}
+  ENABLE_IPV4=${ENABLE_IPV4:-1}
+  ENABLE_IPV6=${ENABLE_IPV6:-1}
+  TARGETS=${TARGETS:-}
+  EXTRA_TRUST=${EXTRA_TRUST:-}
+  EXEMPT_SERVICES=${EXEMPT_SERVICES:-}
+  TORRC_PATHS=${TORRC_PATHS:-"/usr/local/etc/tor/torrc /usr/local/etc/tor/torrc.d/*.conf /etc/tor/torrc /etc/tor/torrc.d/*.conf"}
+  PFCTL_CMD=${PFCTL_CMD:-pfctl}
+  SOCKSTAT_CMD=${SOCKSTAT_CMD:-sockstat}
+  CRONTAB_CMD=${CRONTAB_CMD:-crontab}
+  IFCONFIG_CMD=${IFCONFIG_CMD:-ifconfig}
+  DEFAULT_MAX_SRC_STATES=8
+  DEFAULT_MAX_SRC_CONN=8
+  DEFAULT_MAX_SRC_CONN_RATE_COUNT=9
+  DEFAULT_MAX_SRC_CONN_RATE_WINDOW=60
+  DEFAULT_BLOCK_EXPIRE_SECONDS=300
+
+  MAX_SRC_STATES=${MAX_SRC_STATES:-$DEFAULT_MAX_SRC_STATES}
+  MAX_SRC_CONN=${MAX_SRC_CONN:-$DEFAULT_MAX_SRC_CONN}
+  MAX_SRC_CONN_RATE_COUNT=${MAX_SRC_CONN_RATE_COUNT:-$DEFAULT_MAX_SRC_CONN_RATE_COUNT}
+  MAX_SRC_CONN_RATE_WINDOW=${MAX_SRC_CONN_RATE_WINDOW:-$DEFAULT_MAX_SRC_CONN_RATE_WINDOW}
+  BLOCK_EXPIRE_SECONDS=${BLOCK_EXPIRE_SECONDS:-$DEFAULT_BLOCK_EXPIRE_SECONDS}
+}
+
+tor_ddos_finalize_paths() {
+  TABLE_PREFIX=$(printf '%s' "$PF_ANCHOR" | tr -c 'A-Za-z0-9' '_' | sed 's/^_*//;s/_*$//')
+  [ -n "$TABLE_PREFIX" ] || TABLE_PREFIX=orport_guard
+
+  RENDER_FILE=${RENDER_FILE:-"$STATE_DIR/$TABLE_PREFIX-anchor.conf"}
+  TARGETS_FILE=$STATE_DIR/targets.txt
+  TRUST_V4_FILE=$STATE_DIR/trust-v4.txt
+  TRUST_V6_FILE=$STATE_DIR/trust-v6.txt
+  LAST_REFRESH_FILE=$STATE_DIR/last-refresh.stamp
+  LAST_EXPIRE_FILE=$STATE_DIR/last-expire.stamp
+  LAST_EXPIRE_FAILURE_FILE=$STATE_DIR/last-expire.failed
+  LOADED_PROFILE_FILE=$STATE_DIR/loaded-profile.txt
+
+  TRUST_V4_TABLE=${TABLE_PREFIX}_trust_v4
+  TRUST_V6_TABLE=${TABLE_PREFIX}_trust_v6
+  BLOCK_V4_TABLE=${TABLE_PREFIX}_block_v4
+  BLOCK_V6_TABLE=${TABLE_PREFIX}_block_v6
+}
+
+tor_ddos_log() {
+  printf '%s\n' "$*" >&2
+}
+
+tor_ddos_die() {
+  tor_ddos_log "error: $*"
+  exit 1
+}
+
+tor_ddos_is_true() {
+  case "${1:-0}" in
+    1|yes|YES|true|TRUE|on|ON) return 0 ;;
+  esac
+  return 1
+}
+
+tor_ddos_trim_words() {
+  printf '%s\n' "$*" | awk '{$1=$1; print}'
+}
+
+tor_ddos_require_directory() {
+  [ -d "$1" ] || mkdir -p "$1"
+}
+
+tor_ddos_safe_source() {
+  file=$1
+  [ -f "$file" ] || return 0
+  sh -n "$file" >/dev/null 2>&1 || tor_ddos_die "config syntax check failed: $file"
+  # shellcheck source=/dev/null
+  . "$file"
+}
+
+tor_ddos_load_config() {
+  file=$1
+  [ -z "$file" ] && return 0
+  [ -f "$file" ] || return 0
+  tor_ddos_safe_source "$file"
+}
+
+tor_ddos_targets_configured() {
+  [ -n "$(tor_ddos_trim_words "$TARGETS")" ]
+}
+
+tor_ddos_apply_profile() {
+  case "$PROFILE" in
+    default|'')
+      ;;
+    aggressive)
+      [ "$MAX_SRC_STATES" = "$DEFAULT_MAX_SRC_STATES" ] && MAX_SRC_STATES=4
+      [ "$MAX_SRC_CONN" = "$DEFAULT_MAX_SRC_CONN" ] && MAX_SRC_CONN=4
+      [ "$MAX_SRC_CONN_RATE_COUNT" = "$DEFAULT_MAX_SRC_CONN_RATE_COUNT" ] && MAX_SRC_CONN_RATE_COUNT=7
+      [ "$MAX_SRC_CONN_RATE_WINDOW" = "$DEFAULT_MAX_SRC_CONN_RATE_WINDOW" ] && MAX_SRC_CONN_RATE_WINDOW=1
+      ;;
+    *)
+      tor_ddos_die "invalid profile: $PROFILE"
+      ;;
+  esac
+
+  case "$BLOCK_EXPIRE_SECONDS" in
+    ''|*[!0-9]*)
+      tor_ddos_die "BLOCK_EXPIRE_SECONDS must be a non-negative integer"
+      ;;
+  esac
+}
+
+tor_ddos_detect_effective_profile() {
+  if [ "$MAX_SRC_STATES" = "8" ] &&
+     [ "$MAX_SRC_CONN" = "8" ] &&
+     [ "$MAX_SRC_CONN_RATE_COUNT" = "9" ] &&
+     [ "$MAX_SRC_CONN_RATE_WINDOW" = "60" ]; then
+    printf 'default\n'
+    return 0
+  fi
+
+  if [ "$MAX_SRC_STATES" = "4" ] &&
+     [ "$MAX_SRC_CONN" = "4" ] &&
+     [ "$MAX_SRC_CONN_RATE_COUNT" = "7" ] &&
+     [ "$MAX_SRC_CONN_RATE_WINDOW" = "1" ]; then
+    printf 'aggressive\n'
+    return 0
+  fi
+
+  printf 'custom\n'
+}
+
+tor_ddos_write_loaded_profile() {
+  printf '%s\n' "$(tor_ddos_detect_effective_profile)" >"$LOADED_PROFILE_FILE"
+}
+
+tor_ddos_read_loaded_profile() {
+  [ -f "$LOADED_PROFILE_FILE" ] || return 1
+  profile=$(sed -n '1p' "$LOADED_PROFILE_FILE")
+  case "$profile" in
+    default|aggressive|custom)
+      printf '%s\n' "$profile"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+tor_ddos_pfctl() {
+  "$PFCTL_CMD" "$@"
+}
+
+tor_ddos_pfctl_anchor_table() {
+  anchor=$1
+  table=$2
+  shift 2
+  "$PFCTL_CMD" -a "$anchor" -t "$table" "$@"
+}
+
+tor_ddos_pf_mutation_allowed() {
+  if [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ]; then
+    return 0
+  fi
+
+  if [ "$(uname -s 2>/dev/null || echo unknown)" != "FreeBSD" ]; then
+    tor_ddos_die "PF mutation commands are supported on FreeBSD only; set TOR_DDOS_BSD_ALLOW_UNSUPPORTED=1 for testing"
+  fi
+
+  if [ "$(id -u 2>/dev/null || echo 1)" != "0" ]; then
+    tor_ddos_die "PF mutation commands must run as root"
+  fi
+}
+
+tor_ddos_require_pfctl() {
+  command -v "$PFCTL_CMD" >/dev/null 2>&1 || tor_ddos_die "pfctl command not found: $PFCTL_CMD"
+}
+
+tor_ddos_require_crontab() {
+  command -v "$CRONTAB_CMD" >/dev/null 2>&1 || tor_ddos_die "crontab command not found: $CRONTAB_CMD"
+}
+
+tor_ddos_require_root() {
+  if [ "$(id -u 2>/dev/null || echo 1)" != "0" ]; then
+    tor_ddos_die "this command must run as root"
+  fi
+}
+
+tor_ddos_crontab_mutation_allowed() {
+  [ "${TOR_DDOS_BSD_ALLOW_UNSUPPORTED:-0}" = "1" ] && return 0
+  tor_ddos_require_root
+}
+
+tor_ddos_now_epoch() {
+  date +%s
+}
+
+tor_ddos_file_mtime_epoch() {
+  file=$1
+  [ -f "$file" ] || return 1
+
+  if stat -f %m "$file" >/dev/null 2>&1; then
+    stat -f %m "$file"
+    return 0
+  fi
+
+  if stat -c %Y "$file" >/dev/null 2>&1; then
+    stat -c %Y "$file"
+    return 0
+  fi
+
+  return 1
+}
+
+tor_ddos_touch_file() {
+  file=$1
+  : >"$file"
+}
+
+tor_ddos_format_age() {
+  seconds=${1:-0}
+  if [ "$seconds" -lt 60 ]; then
+    printf '%ss' "$seconds"
+  elif [ "$seconds" -lt 3600 ]; then
+    printf '%sm' $((seconds / 60))
+  elif [ "$seconds" -lt 86400 ]; then
+    printf '%sh' $((seconds / 3600))
+  else
+    printf '%sd' $((seconds / 86400))
+  fi
+}
+
+tor_ddos_format_last_run() {
+  file=$1
+  if mtime=$(tor_ddos_file_mtime_epoch "$file" 2>/dev/null); then
+    now=$(tor_ddos_now_epoch)
+    if [ "$mtime" -gt "$now" ]; then
+      age=0
+    else
+      age=$((now - mtime))
+    fi
+    printf '%s ago\n' "$(tor_ddos_format_age "$age")"
+  else
+    printf 'never\n'
+  fi
+}
+
+tor_ddos_format_last_expire_run() {
+  success_mtime=$(tor_ddos_file_mtime_epoch "$LAST_EXPIRE_FILE" 2>/dev/null || true)
+  failure_mtime=$(tor_ddos_file_mtime_epoch "$LAST_EXPIRE_FAILURE_FILE" 2>/dev/null || true)
+
+  if [ -n "$failure_mtime" ] && { [ -z "$success_mtime" ] || [ "$failure_mtime" -ge "$success_mtime" ]; }; then
+    now=$(tor_ddos_now_epoch)
+    if [ "$failure_mtime" -gt "$now" ]; then
+      age=0
+    else
+      age=$((now - failure_mtime))
+    fi
+    printf 'failed %s ago\n' "$(tor_ddos_format_age "$age")"
+    return 0
+  fi
+
+  tor_ddos_format_last_run "$LAST_EXPIRE_FILE"
+}
+
+tor_ddos_shell_quote() {
+  value=$1
+  case "$value" in
+    '')
+      printf "''"
+      ;;
+    *[!A-Za-z0-9_./:-]*)
+      printf "'%s'" "$(printf '%s' "$value" | sed "s/'/'\\\\''/g")"
+      ;;
+    *)
+      printf '%s' "$value"
+      ;;
+  esac
+}
+
+tor_ddos_trust_age_seconds() {
+  mtime_v4=
+  mtime_v6=
+
+  if tor_ddos_is_true "$ENABLE_IPV4"; then
+    mtime_v4=$(tor_ddos_file_mtime_epoch "$TRUST_V4_FILE" 2>/dev/null || true)
+  fi
+  if tor_ddos_is_true "$ENABLE_IPV6"; then
+    mtime_v6=$(tor_ddos_file_mtime_epoch "$TRUST_V6_FILE" 2>/dev/null || true)
+  fi
+
+  mtime=
+  if [ -n "$mtime_v4" ] && [ -n "$mtime_v6" ]; then
+    if [ "$mtime_v4" -le "$mtime_v6" ]; then
+      mtime=$mtime_v4
+    else
+      mtime=$mtime_v6
+    fi
+  elif [ -n "$mtime_v4" ]; then
+    mtime=$mtime_v4
+  elif [ -n "$mtime_v6" ]; then
+    mtime=$mtime_v6
+  else
+    return 1
+  fi
+
+  now=$(tor_ddos_now_epoch)
+  if [ "$now" -lt "$mtime" ]; then
+    printf '0\n'
+  else
+    printf '%s\n' $((now - mtime))
+  fi
+}
+
+tor_ddos_effective_config_path() {
+  if [ -n "${CONFIG_FILE:-}" ]; then
+    printf '%s\n' "$CONFIG_FILE"
+  else
+    printf '%s\n' "$CONFIG_FILE_DEFAULT"
+  fi
+}
+
+tor_ddos_cli_cron_args() {
+  args=
+  effective_config=$(tor_ddos_effective_config_path)
+  if [ -n "$effective_config" ] && [ "$effective_config" != "$CONFIG_FILE_DEFAULT" ]; then
+    args="$args --config $(tor_ddos_shell_quote "$effective_config")"
+  fi
+  if [ "$STATE_DIR" != "/var/db/orport-guard" ]; then
+    args="$args --state-dir $(tor_ddos_shell_quote "$STATE_DIR")"
+  fi
+  if [ "$PF_ANCHOR" != "orport-guard" ]; then
+    args="$args --anchor $(tor_ddos_shell_quote "$PF_ANCHOR")"
+  fi
+  if [ "$PROFILE" != "default" ]; then
+    args="$args --profile $(tor_ddos_shell_quote "$PROFILE")"
+  fi
+  if [ "$BLOCK_EXPIRE_SECONDS" != "$DEFAULT_BLOCK_EXPIRE_SECONDS" ]; then
+    args="$args --block-expire-seconds $(tor_ddos_shell_quote "$BLOCK_EXPIRE_SECONDS")"
+  fi
+  if tor_ddos_is_true "$ENABLE_IPV4" && ! tor_ddos_is_true "$ENABLE_IPV6"; then
+    args="$args --ipv4-only"
+  elif ! tor_ddos_is_true "$ENABLE_IPV4" && tor_ddos_is_true "$ENABLE_IPV6"; then
+    args="$args --ipv6-only"
+  fi
+  printf '%s\n' "$(tor_ddos_trim_words "$args")"
+}
+
+tor_ddos_cron_block() {
+  common_args=$(tor_ddos_cli_cron_args)
+  program=$(tor_ddos_shell_quote "$PROGRAM_PATH")
+  if [ -n "$common_args" ]; then
+    expire_cmd="$program $common_args expire"
+    refresh_cmd="$program $common_args refresh"
+  else
+    expire_cmd="$program expire"
+    refresh_cmd="$program refresh"
+  fi
+
+  cat <<EOF
+# BEGIN orport-guard
+* * * * * $expire_cmd >/dev/null 2>&1
+17 */6 * * * $refresh_cmd >/dev/null 2>&1
+# END orport-guard
+EOF
+}
+
+tor_ddos_crontab_list() {
+  if "$CRONTAB_CMD" -l 2>/dev/null; then
+    return 0
+  fi
+  return 0
+}
+
+tor_ddos_crontab_strip_block() {
+  awk '
+    /^# BEGIN orport-guard$/ { skip = 1; next }
+    /^# END orport-guard$/ { skip = 0; next }
+    !skip { print }
+  '
+}
+
+tor_ddos_cron_installed() {
+  command -v "$CRONTAB_CMD" >/dev/null 2>&1 || return 1
+  tor_ddos_crontab_list | grep -Fqx '# BEGIN orport-guard'
+}
+
+tor_ddos_http_get() {
+  url=$1
+
+  if [ -n "${FETCH_CMD:-}" ]; then
+    "$FETCH_CMD" "$url"
+    return $?
+  fi
+
+  if command -v fetch >/dev/null 2>&1; then
+    fetch -qo - "$url"
+    return $?
+  fi
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url"
+    return $?
+  fi
+
+  tor_ddos_die "neither fetch nor curl is available"
+}
+
+tor_ddos_write_words_file() {
+  file=$1
+  shift
+  {
+    for item in "$@"; do
+      [ -n "$item" ] && printf '%s\n' "$item"
+    done
+  } | awk 'NF { if (!seen[$0]++) print $0 }' >"$file"
+}
+
+tor_ddos_append_words_to_file() {
+  file=$1
+  shift
+  for item in "$@"; do
+    [ -n "$item" ] && printf '%s\n' "$item" >>"$file"
+  done
+}
+
+tor_ddos_split_target() {
+  target=$1
+  case "$target" in
+    \[*\]:*)
+      addr=$(printf '%s' "$target" | sed 's/^\[\(.*\)\]:.*/\1/')
+      port=$(printf '%s' "$target" | sed 's/^\[.*\]://')
+      printf 'inet6|%s|%s\n' "$addr" "$port"
+      ;;
+    *.*:*)
+      addr=${target%:*}
+      port=${target##*:}
+      printf 'inet|%s|%s\n' "$addr" "$port"
+      ;;
+    *)
+      tor_ddos_die "invalid target: $target"
+      ;;
+  esac
+}
+
+tor_ddos_split_service() {
+  tor_ddos_split_target "$1"
+}
+
+tor_ddos_split_trust() {
+  item=$1
+  case "$item" in
+    *:*)
+      printf 'inet6|%s\n' "$item"
+      ;;
+    *.*)
+      printf 'inet|%s\n' "$item"
+      ;;
+    *)
+      tor_ddos_die "invalid trust entry: $item"
+      ;;
+  esac
+}

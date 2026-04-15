@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify shell sources
+        run: |
+          find bin lib scripts tests -type f -name '*.sh' -print | sort | while IFS= read -r f; do
+            sh -n "$f"
+          done
+
+      - name: Run shell harness
+        run: ./tests/run.sh
+
+      - name: Build standalone release artifact
+        run: ./scripts/build-release.sh
+
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orport-guard-dist
+          path: dist/*
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/orport-guard
+            dist/orport-guard.conf.example
+            dist/SHA256SUMS

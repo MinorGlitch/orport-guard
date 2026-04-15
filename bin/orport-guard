@@ -6,28 +6,38 @@ PROGRAM_NAME=${0##*/}
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 PROGRAM_PATH=$SCRIPT_DIR/$PROGRAM_NAME
+TOR_DDOS_LIB_DIR=$ROOT_DIR/lib
 
 . "$ROOT_DIR/lib/pf.sh"
+. "$ROOT_DIR/lib/cli.sh"
 
 usage() {
   cat <<EOF
 Usage: $PROGRAM_NAME [options] <command>
 
 Commands:
-  enable     Install the PF hook if needed, reload pf.conf, then apply the anchor.
-  check      Render the anchor and run PF syntax checks without loading it.
-  apply      Render and load the PF anchor, then refresh trust tables.
-  refresh    Refresh trust tables only.
-  expire     Expire block-table entries older than the configured threshold.
-  render     Print the generated PF anchor to stdout.
-  status     Show discovered targets and PF status for this tool.
+  enable     First install or full reconcile: install the PF hook if needed,
+             reload pf.conf, then apply the managed anchor.
+  check      Discover current targets in a temporary workspace, refresh trust
+             data, and run PF syntax checks without loading live PF.
+  apply      Reload the managed anchor only. The PF root hook must already be
+             live.
+  refresh    Refresh live trust tables only.
+  expire     Expire live block-table entries older than the configured
+             threshold.
+  render     Discover current targets in a temporary workspace, refresh trust
+             data, and print the generated anchor.
+  status     Show the current live anchor state and cached metadata.
   install-hook
              Ensure the root pf.conf contains anchor "orport-guard".
+             Advanced/manual path; enable already handles this.
   install-cron
-             Install managed cron entries for expiry and trust refresh.
+             Install the managed cron block: expire every minute, refresh every
+             6 hours.
   remove-cron
-             Remove managed cron entries for this tool.
-  disable    Disable only the tool-managed PF anchor and tables.
+             Remove only the managed cron block for this tool.
+  disable    Unload the managed anchor and flush its tables. Leaves the PF
+             hook and cron entries in place.
 
 Options:
   -c, --config PATH           Use an alternate config file.
@@ -38,16 +48,22 @@ Options:
       --block-expire-seconds N
                               Expire block-table entries older than N seconds.
       --render-file PATH      Override the rendered anchor path.
-      --torrc PATH            Add a torrc path for discovery.
+      --torrc PATH            Add a torrc path for discovery. Repeatable.
       --target VALUE          Add an explicit target (IPv4:port or [IPv6]:port).
-      --trust VALUE           Add an explicit trusted IP or network.
+                              Repeatable. Explicit targets replace autodiscovery.
+      --trust VALUE           Add an explicit trusted IP or network. Repeatable.
       --service VALUE         Add an exempt local service (IPv4:port or [IPv6]:port).
-      --ipv4-only             Disable IPv6 rendering.
-      --ipv6-only             Disable IPv4 rendering.
+                              Repeatable.
+      --ipv4-only             Restrict discovery and rendering to IPv4.
+      --ipv6-only             Restrict discovery and rendering to IPv6.
   -h, --help                  Show this help text.
 
 Config precedence:
   CLI flags override the config file, which overrides discovery defaults.
+
+Option scoping:
+  Options are command-scoped. Unsupported flags for a given subcommand are
+  rejected instead of being silently ignored.
 EOF
 }
 
@@ -65,6 +81,8 @@ CLI_TRUST=
 CLI_SERVICES=
 CLI_ENABLE_IPV4=
 CLI_ENABLE_IPV6=
+CLI_FAMILY_MODE=
+CLI_USED_OPTIONS=
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -76,66 +94,83 @@ while [ $# -gt 0 ]; do
     -c|--config)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CONFIG_FILE=$2
+      tor_ddos_mark_option_used config
       shift 2
       ;;
     --state-dir)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_STATE_DIR=$2
+      tor_ddos_mark_option_used state-dir
       shift 2
       ;;
     --anchor)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_ANCHOR=$2
+      tor_ddos_mark_option_used anchor
       shift 2
       ;;
     --pf-conf)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_PF_CONF=$2
+      tor_ddos_mark_option_used pf-conf
       shift 2
       ;;
     --profile)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_PROFILE=$2
+      tor_ddos_mark_option_used profile
       shift 2
       ;;
     --block-expire-seconds)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_BLOCK_EXPIRE_SECONDS=$2
+      tor_ddos_mark_option_used block-expire-seconds
       shift 2
       ;;
     --render-file)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_RENDER_FILE=$2
+      tor_ddos_mark_option_used render-file
       shift 2
       ;;
     --torrc)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_TORRC_PATHS="$CLI_TORRC_PATHS $2"
+      tor_ddos_mark_option_used torrc
       shift 2
       ;;
     --target)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_TARGETS="$CLI_TARGETS $2"
+      tor_ddos_mark_option_used target
       shift 2
       ;;
     --trust)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_TRUST="$CLI_TRUST $2"
+      tor_ddos_mark_option_used trust
       shift 2
       ;;
     --service)
       [ $# -ge 2 ] || tor_ddos_die "missing value for $1"
       CLI_SERVICES="$CLI_SERVICES $2"
+      tor_ddos_mark_option_used service
       shift 2
       ;;
     --ipv4-only)
+      [ -z "$CLI_FAMILY_MODE" ] || tor_ddos_die "cannot combine --ipv4-only with --ipv6-only"
+      CLI_FAMILY_MODE=ipv4-only
       CLI_ENABLE_IPV4=1
       CLI_ENABLE_IPV6=0
+      tor_ddos_mark_option_used ipv4-only
       shift
       ;;
     --ipv6-only)
+      [ -z "$CLI_FAMILY_MODE" ] || tor_ddos_die "cannot combine --ipv6-only with --ipv4-only"
+      CLI_FAMILY_MODE=ipv6-only
       CLI_ENABLE_IPV4=0
       CLI_ENABLE_IPV6=1
+      tor_ddos_mark_option_used ipv6-only
       shift
       ;;
     -h|--help)
@@ -153,9 +188,14 @@ done
   exit 2
 }
 
+[ $# -eq 0 ] || tor_ddos_die "unexpected trailing argument after $COMMAND: $1"
+
+tor_ddos_validate_command_options "$COMMAND"
+
 tor_ddos_set_defaults "$ROOT_DIR"
 
 if [ -n "$CONFIG_FILE" ]; then
+  [ -f "$CONFIG_FILE" ] || tor_ddos_die "config file not found: $CONFIG_FILE"
   tor_ddos_load_config "$CONFIG_FILE"
 else
   tor_ddos_load_config "$CONFIG_FILE_DEFAULT"

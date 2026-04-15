@@ -6,6 +6,9 @@ for arg in "$@"; do
 done
 
 case "$url" in
+  *"${CURL_FAIL_URL_SUBSTRING:-__never_match__}"*)
+    exit 1
+    ;;
   *authorities-v4.txt)
     cat <<'EOF'
 header

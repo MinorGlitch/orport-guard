@@ -77,6 +77,7 @@ if [ "$#" -ge 6 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ 
 fi
 
 if [ "$#" -ge 7 ] && [ "$1" = "-a" ] && [ "$3" = "-t" ] && [ "$5" = "-T" ] && [ "$6" = "expire" ]; then
+  [ "${PFCTL_FAIL_EXPIRE:-0}" = "1" ] && exit 1
   anchor=$2
   table=$4
   file="$STATE_DIR/table-${anchor}-$table.txt"
@@ -109,6 +110,7 @@ if [ "$#" -ge 4 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "show" ]; th
 fi
 
 if [ "$#" -ge 5 ] && [ "$1" = "-t" ] && [ "$3" = "-T" ] && [ "$4" = "expire" ]; then
+  [ "${PFCTL_FAIL_EXPIRE:-0}" = "1" ] && exit 1
   table=$2
   file="$STATE_DIR/table-$table.txt"
   [ -f "$file" ] || : >"$STATE_DIR/table-$table.txt"
@@ -129,4 +131,5 @@ if [ "$#" -eq 2 ] && [ "$1" = "-s" ] && [ "$2" = "state" ]; then
   exit 0
 fi
 
-exit 0
+printf 'unsupported pfctl invocation: %s\n' "$*" >&2
+exit 1

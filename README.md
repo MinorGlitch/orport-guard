@@ -49,6 +49,31 @@ If you just want the flags:
 ./bin/orport-guard --help
 ```
 
+Flags are command-scoped. For example, `status` no longer accepts `--profile`,
+because it reports the live loaded profile recorded during `enable` / `apply`
+instead of trusting a caller-supplied override.
+
+## Release artifact
+
+The source tree stays modular, but releases are bundled into one standalone
+shell script.
+
+Build it locally with:
+
+```sh
+./scripts/build-release.sh
+```
+
+That writes:
+
+- `dist/orport-guard`
+- `dist/orport-guard.conf.example`
+- `dist/SHA256SUMS`
+
+The bundled `dist/orport-guard` is intended to be the release/install artifact.
+The repository sources under `bin/` and `lib/` remain split for maintenance and
+review.
+
 ## PF integration
 
 This tool only manages one anchor and the tables used by that anchor.
@@ -93,7 +118,7 @@ For most operators, the flow should be:
 ./bin/orport-guard status
 ```
 
-`check` renders the anchor and runs PF syntax checks without loading it.
+`check` discovers targets and refreshes trust data in a temporary workspace, then runs PF syntax checks without loading live PF or updating cached state.
 `enable` makes sure the root hook exists, reloads `pf.conf`, then applies the managed anchor.
 If you want exact expiry cleanup and periodic trust refresh, install the managed cron block afterwards:
 
@@ -119,17 +144,37 @@ On NATed VPS setups, PF usually sees the post-NAT local address, not the public 
 
 That matters because a rule for the public IP can load cleanly and still never match a packet if the host actually receives traffic on a different local address such as `192.0.2.12`.
 
-When you are happy with what it found and rendered:
+For a first install or a full reconcile, use:
+
+```sh
+./bin/orport-guard enable
+```
+
+For later updates when the PF hook is already live, use:
 
 ```sh
 ./bin/orport-guard apply
 ```
 
-If you want to back it out:
+For trust-list-only refreshes:
+
+```sh
+./bin/orport-guard refresh
+```
+
+If you want to unload only the managed anchor and tables:
 
 ```sh
 ./bin/orport-guard disable
 ```
+
+That does not remove the PF root hook or the managed cron block. For a full rollback, also run:
+
+```sh
+./bin/orport-guard remove-cron
+```
+
+and remove `anchor "orport-guard"` from `/etc/pf.conf` before reloading PF.
 
 ## FreeBSD deployment notes
 
@@ -225,6 +270,10 @@ doas ./bin/orport-guard expire
 doas ./bin/orport-guard refresh
 ```
 
+The managed cron block only carries the options those commands actually use. It
+does not blindly copy unrelated flags such as `--pf-conf`, discovery paths, or
+explicit targets into scheduled `expire` and `refresh` runs.
+
 ## Configuration
 
 The sample config is:
@@ -241,8 +290,12 @@ The main settings are:
   `default` or `aggressive`
 - `TARGETS`
   explicit OR targets such as `198.51.100.10:9001 [2001:db8::10]:9001`
+  when set, explicit targets replace autodiscovery
 - `TORRC_PATHS`
   where discovery should look for Tor config
+- `ENABLE_IPV4`
+- `ENABLE_IPV6`
+  restrict discovery, trust-list fetching, and rendering by address family
 - `EXTRA_TRUST`
   extra trusted IPs or networks
 - `EXEMPT_SERVICES`
@@ -263,7 +316,7 @@ The default profile is intentionally conservative.
 If your relay is under active ORPort abuse, use:
 
 ```sh
-./bin/orport-guard --profile aggressive apply
+./bin/orport-guard --profile aggressive enable
 ```
 
 That profile tightens the defaults to roughly match the sharper Linux-era recipes:
@@ -301,13 +354,16 @@ There is a small shell test harness under:
 ./tests
 ```
 
+The shared helpers live in `tests/lib/`, and the cases are split across
+`tests/cases/*.sh` so the main runner does not need to carry every test body.
+
 Run it with:
 
 ```sh
 ./tests/run.sh
 ```
 
-Those tests use stubs for `pfctl`, `curl`, and `sockstat`, so they verify the shell logic and workflow without touching a real firewall.
+Those tests use stubs for `pfctl`, `curl`, `sockstat`, `ifconfig`, and `crontab`, so they verify the shell logic and workflow without touching a real firewall or live crontab.
 
 ## Why another attempt?
 
