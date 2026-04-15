@@ -197,6 +197,7 @@ test_apply_status_refresh_disable() {
   status_out=$TEST_ROOT/status.out
   run_cli --state-dir "$TEST_ROOT/state5" --profile aggressive status >"$status_out"
   assert_contains "$status_out" "Anchor loaded: yes" "status should report loaded anchor"
+  assert_not_contains "$status_out" "Anchor loaded: yesTrust table counts:" "status should keep Anchor loaded and trust counts on separate lines"
   assert_contains "$status_out" "inet 198.51.100.10:9001" "status should list protected target"
   assert_contains "$status_out" "Block expiry: 300s (lazy, on next enable/apply/refresh)" "status should describe lazy expiry semantics"
 
@@ -212,6 +213,15 @@ test_apply_status_refresh_disable() {
   pass "apply, status, refresh, and disable"
 }
 
+test_status_reports_cron_managed_expiry() {
+  rm -f "$TEST_ROOT/crontab"
+  run_cli --state-dir "$TEST_ROOT/state-cron-status" --profile aggressive install-cron >/dev/null
+  status_out=$TEST_ROOT/status-cron.out
+  run_cli --state-dir "$TEST_ROOT/state-cron-status" --profile aggressive status >"$status_out"
+  assert_contains "$status_out" "Block expiry: 300s (managed by cron)" "status should report cron-managed expiry when the managed crontab block is present"
+  pass "status reports cron-managed expiry"
+}
+
 test_render_ipv4
 test_render_dualstack_and_idempotent
 test_render_aggressive_profile
@@ -225,5 +235,6 @@ test_install_hook_is_idempotent
 test_install_and_remove_cron
 test_enable_installs_reload_and_apply
 test_apply_status_refresh_disable
+test_status_reports_cron_managed_expiry
 
-printf '1..13\n'
+printf '1..14\n'

@@ -297,6 +297,11 @@ tor_ddos_crontab_strip_block() {
   '
 }
 
+tor_ddos_cron_installed() {
+  command -v "$CRONTAB_CMD" >/dev/null 2>&1 || return 1
+  tor_ddos_crontab_list | grep -Fqx '# BEGIN tor-anchor'
+}
+
 tor_ddos_http_get() {
   url=$1
 
@@ -907,7 +912,11 @@ tor_ddos_status() {
   printf 'PF config: %s\n' "$PF_CONF"
   printf 'Profile: %s\n' "$PROFILE"
   if [ "$BLOCK_EXPIRE_SECONDS" -gt 0 ]; then
-    printf 'Block expiry: %ss (lazy, on next enable/apply/refresh)\n' "$BLOCK_EXPIRE_SECONDS"
+    if tor_ddos_cron_installed; then
+      printf 'Block expiry: %ss (managed by cron)\n' "$BLOCK_EXPIRE_SECONDS"
+    else
+      printf 'Block expiry: %ss (lazy, on next enable/apply/refresh)\n' "$BLOCK_EXPIRE_SECONDS"
+    fi
   else
     printf 'Block expiry: disabled\n'
   fi
@@ -923,7 +932,7 @@ tor_ddos_status() {
   else
     printf 'no\n'
   fi
-  printf 'Anchor loaded: %s' "$(tor_ddos_status_anchor_loaded)"
+  printf 'Anchor loaded: %s\n' "$(tor_ddos_status_anchor_loaded)"
   printf 'Trust table counts: IPv4=%s IPv6=%s\n' "$(tor_ddos_status_table_count "$TRUST_V4_TABLE")" "$(tor_ddos_status_table_count "$TRUST_V6_TABLE")"
   printf 'Block table counts: IPv4=%s IPv6=%s\n' "$(tor_ddos_status_table_count "$BLOCK_V4_TABLE")" "$(tor_ddos_status_table_count "$BLOCK_V6_TABLE")"
   if trust_age=$(tor_ddos_trust_age_seconds 2>/dev/null); then
