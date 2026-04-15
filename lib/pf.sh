@@ -217,6 +217,9 @@ tor_ddos_parse_socket_token() {
   port=${token##*:}
   addr=${token%:*}
   case "$addr" in
+    \*|'')
+      return 1
+      ;;
     \[*\])
       addr=$(printf '%s' "$addr" | sed 's/^\[\(.*\)\]$/\1/')
       printf 'inet6|%s|%s\n' "$addr" "$port"
@@ -265,6 +268,8 @@ tor_ddos_collect_targets() {
 
   unresolved_tmp=$targets_tmp.unresolved
   : >"$unresolved_tmp"
+  unresolved_remaining_tmp=$targets_tmp.unresolved.remaining
+  : >"$unresolved_remaining_tmp"
   resolved_tmp=$targets_tmp.resolved
   : >"$resolved_tmp"
 
@@ -279,7 +284,9 @@ tor_ddos_collect_targets() {
 
   sort -u "$unresolved_tmp" 2>/dev/null | while IFS= read -r port; do
     [ -n "$port" ] || continue
-    tor_ddos_discover_from_sockstat "$port" >>"$resolved_tmp"
+    if ! tor_ddos_discover_from_sockstat "$port" >>"$resolved_tmp"; then
+      printf '%s\n' "$port" >>"$unresolved_remaining_tmp"
+    fi
   done
 
   : >"$targets_tmp"
@@ -310,6 +317,11 @@ EOF
     fi
     printf '%s|%s|%s\n' "$family" "$addr" "$port" >>"$targets_tmp"
   done <"$targets_tmp.final"
+
+  if [ ! -s "$targets_tmp" ] && [ -s "$unresolved_remaining_tmp" ]; then
+    ports=$(tr '\n' ' ' <"$unresolved_remaining_tmp" | awk '{$1=$1; print}')
+    tor_ddos_die "could not resolve wildcard ORPort listener(s): $ports; set explicit TARGETS or pass --target"
+  fi
 }
 
 tor_ddos_fetch_trust_lists() {
