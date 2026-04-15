@@ -1,5 +1,11 @@
 # orport-guard
 
+Quick start:
+
+```sh
+curl -fsSLo orport-guard https://github.com/MinorGlitch/orport-guard/releases/latest/download/orport-guard && chmod +x ./orport-guard && ./orport-guard --help
+```
+
 This is my attempt to make the Tor relay DDoS mitigation work that people have been doing on Linux usable on FreeBSD with PF.
 
 The other projects in this space are built around `iptables`, `ipset`, `conntrack`, `recent`, and similar Linux pieces. That does not help much if your relay is on FreeBSD. The point of this repository is not to port those scripts line by line. The point is to keep the same idea, but express it in a way that fits PF and can live on a BSD relay without owning the whole firewall.
